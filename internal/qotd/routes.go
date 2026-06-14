@@ -1,7 +1,9 @@
 package qotd
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -56,13 +58,12 @@ func (h *handler) embedImage(c *gin.Context) {
 	c.JSON(http.StatusNotImplemented, gin.H{"error": "not implemented"})
 }
 
-func (h *handler) getActiveRecordedDate() string {
+func getActiveRecordedDate(db *sql.DB) string {
 	today := time.Now().UTC().Format("2006-01-02")
 
 	var active string
 	// Carry-forward: find oldest unanswered (or locked-today) question on or before today
-	// Node.js: SELECT ... WHERE q.recordedDate <= ? ... ORDER BY q.recordedDate ASC LIMIT 1
-	err := h.db.QueryRow(`
+	err := db.QueryRow(`
 		SELECT q.recordedDate FROM daily_questions q
 		LEFT JOIN daily_question_answers a ON a.recordedDate = q.recordedDate
 		WHERE q.recordedDate <= ? AND q.archivedAt IS NULL
@@ -75,7 +76,7 @@ func (h *handler) getActiveRecordedDate() string {
 	}
 
 	// Fallback: today's question if exists and not archived
-	err = h.db.QueryRow(`SELECT recordedDate FROM daily_questions WHERE recordedDate = ? AND archivedAt IS NULL`, today).Scan(&active)
+	err = db.QueryRow(`SELECT recordedDate FROM daily_questions WHERE recordedDate = ? AND archivedAt IS NULL`, today).Scan(&active)
 	if err == nil && active != "" {
 		return active
 	}
@@ -86,7 +87,7 @@ func (h *handler) getActiveRecordedDate() string {
 func (h *handler) getCurrent(c *gin.Context) {
 	today := time.Now().UTC().Format("2006-01-02")
 
-	activeDate := h.getActiveRecordedDate()
+	activeDate := getActiveRecordedDate(h.db)
 
 	var prompt string
 	var lockedAt, archivedAt sql.NullString
@@ -268,7 +269,7 @@ func (h *handler) submitAnswer(c *gin.Context) {
 		return
 	}
 
-	activeDate := h.getActiveRecordedDate()
+	activeDate := getActiveRecordedDate(h.db)
 	user := auth.GetUser(c)
 
 	answerID := "qa_" + time.Now().UTC().Format("20060102150405") + "_" + randomHex(4)
@@ -320,7 +321,7 @@ func (h *handler) adminQueue(c *gin.Context) {
 	}
 
 	today := time.Now().UTC().Format("2006-01-02")
-	startDate := h.getActiveRecordedDate()
+	startDate := getActiveRecordedDate(h.db)
 
 	// Pagination
 	pageSize := 5
@@ -424,7 +425,7 @@ func (h *handler) queuePrompts(c *gin.Context) {
 	}
 
 	today := time.Now().UTC().Format("2006-01-02")
-	startDate := h.getActiveRecordedDate()
+	startDate := getActiveRecordedDate(h.db)
 
 	// Get occupied dates from startDate onward
 	rows, _ := h.db.Query(`SELECT recordedDate FROM daily_questions WHERE recordedDate >= ? ORDER BY recordedDate ASC`, startDate)
@@ -521,13 +522,13 @@ func (h *handler) forceArchive(c *gin.Context) {
 
 	today := time.Now().UTC().Format("2006-01-02")
 
-	// Check if there's an active question to archive
-	var prompt string
+	// Find the actual active question (includes carry-forward)
+	var recordedDate, prompt string
 	var lockedAt sql.NullString
-	err := h.db.QueryRow(`SELECT prompt, lockedAt FROM daily_questions WHERE recordedDate = ? AND archivedAt IS NULL ORDER BY recordedDate ASC LIMIT 1`, today).Scan(&prompt, &lockedAt)
+	err := h.db.QueryRow(`SELECT recordedDate, prompt, lockedAt FROM daily_questions WHERE recordedDate = ? AND archivedAt IS NULL ORDER BY recordedDate ASC LIMIT 1`, today).Scan(&recordedDate, &prompt, &lockedAt)
 	if err != nil {
 		// Try carry-forward
-		err = h.db.QueryRow(`SELECT prompt, lockedAt FROM daily_questions WHERE recordedDate >= ? AND archivedAt IS NULL ORDER BY recordedDate ASC LIMIT 1`, today).Scan(&prompt, &lockedAt)
+		err = h.db.QueryRow(`SELECT recordedDate, prompt, lockedAt FROM daily_questions WHERE recordedDate >= ? AND archivedAt IS NULL ORDER BY recordedDate ASC LIMIT 1`, today).Scan(&recordedDate, &prompt, &lockedAt)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "No active question to archive"})
 			return
@@ -535,12 +536,12 @@ func (h *handler) forceArchive(c *gin.Context) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	h.db.Exec("UPDATE daily_questions SET archivedAt = ?, updatedAt = ? WHERE recordedDate = ? AND archivedAt IS NULL", now, now, today)
+	h.db.Exec("UPDATE daily_questions SET archivedAt = ?, updatedAt = ? WHERE recordedDate = ? AND archivedAt IS NULL", now, now, recordedDate)
 
 	// Return archived question
-	var recordedDate, createdAt, updatedAt string
+	var createdAt, updatedAt string
 	var la, aa sql.NullString
-	err = h.db.QueryRow(`SELECT recordedDate, prompt, lockedAt, archivedAt, createdAt, updatedAt FROM daily_questions WHERE recordedDate = ?`, today).Scan(&recordedDate, &prompt, &la, &aa, &createdAt, &updatedAt)
+	err = h.db.QueryRow(`SELECT recordedDate, prompt, lockedAt, archivedAt, createdAt, updatedAt FROM daily_questions WHERE recordedDate = ?`, recordedDate).Scan(&recordedDate, &prompt, &la, &aa, &createdAt, &updatedAt)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 		return
@@ -555,7 +556,7 @@ func (h *handler) forceArchive(c *gin.Context) {
 
 func (h *handler) archive(c *gin.Context) {
 	// Archive cutoff: active question's date or today
-	cutoffDate := h.getActiveRecordedDate()
+	cutoffDate := getActiveRecordedDate(h.db)
 
 	rows, err := h.db.Query(`
 		SELECT q.recordedDate, q.prompt, q.createdAt, q.updatedAt,
@@ -593,7 +594,7 @@ func (h *handler) archive(c *gin.Context) {
 func (h *handler) archiveDay(c *gin.Context) {
 	recordedDate := c.Param("recordedDate")
 
-	cutoffDate := h.getActiveRecordedDate()
+	cutoffDate := getActiveRecordedDate(h.db)
 
 	var prompt, ca, ua string
 	var lockedAt, archivedAt sql.NullString
@@ -669,10 +670,16 @@ func (h *handler) deleteAnswer(c *gin.Context) {
 }
 
 func randomHex(n int) string {
-	const letters = "abcdef0123456789"
+	const hexChars = "abcdef0123456789"
 	b := make([]byte, n)
 	for i := range b {
-		b[i] = letters[time.Now().UTC().UnixNano()%int64(len(letters))]
+		idx, err := rand.Int(rand.Reader, big.NewInt(int64(len(hexChars))))
+		if err != nil {
+			// Fallback to time-based on crypto failure
+			b[i] = hexChars[time.Now().UTC().UnixNano()%int64(len(hexChars))]
+			continue
+		}
+		b[i] = hexChars[idx.Int64()]
 	}
 	return string(b)
 }

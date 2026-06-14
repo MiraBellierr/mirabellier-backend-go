@@ -190,7 +190,7 @@ func RenderQOTDSEOPage(c *gin.Context, db *sql.DB, websiteBase string) {
 	}
 
 	prompt := "Question of the Day"
-	db.QueryRow("SELECT prompt FROM daily_questions WHERE recorded_date = date('now') AND archived_at IS NULL").Scan(&prompt)
+	db.QueryRow("SELECT prompt FROM daily_questions WHERE recordedDate = date('now') AND archivedAt IS NULL").Scan(&prompt)
 
 	pageHTML := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">

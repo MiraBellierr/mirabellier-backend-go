@@ -109,31 +109,19 @@ type activeQuestion struct {
 }
 
 func getActiveQuestionForDiscord(db *sql.DB, today string) *activeQuestion {
-	// Carry-forward: oldest unanswered (or locked-today) question on or before today
+	// Reuse shared carry-forward date helper
+	activeDate := getActiveRecordedDate(db)
+
 	var q activeQuestion
 	err := db.QueryRow(`
-		SELECT q.recordedDate, q.prompt, COALESCE(q.discordNotifiedAt, '')
-		FROM daily_questions q
-		LEFT JOIN daily_question_answers a ON a.recordedDate = q.recordedDate
-		WHERE q.recordedDate <= ? AND q.archivedAt IS NULL
-		GROUP BY q.recordedDate, q.prompt, q.discordNotifiedAt
-		HAVING COUNT(a.id) = 0 OR substr(COALESCE(q.lockedAt,''), 1, 10) = ?
-		ORDER BY q.recordedDate ASC LIMIT 1
-	`, today, today).Scan(&q.recordedDate, &q.prompt, &q.discordNotifiedAt)
-	if err == nil {
-		return &q
-	}
-
-	// Fallback: today's question if not archived
-	err = db.QueryRow(`
 		SELECT recordedDate, prompt, COALESCE(discordNotifiedAt, '')
 		FROM daily_questions WHERE recordedDate = ? AND archivedAt IS NULL
-	`, today).Scan(&q.recordedDate, &q.prompt, &q.discordNotifiedAt)
-	if err == nil {
-		return &q
+	`, activeDate).Scan(&q.recordedDate, &q.prompt, &q.discordNotifiedAt)
+	if err != nil {
+		return nil
 	}
 
-	return nil
+	return &q
 }
 
 func buildWebhookPayload(q *activeQuestion, today string, cfg *DiscordConfig) map[string]any {

@@ -143,31 +143,31 @@ CREATE INDEX IF NOT EXISTS idx_guestbook_created_at ON guestbook_entries(created
 -- -------------------------------------------
 
 CREATE TABLE IF NOT EXISTS daily_questions (
-    recorded_date       TEXT PRIMARY KEY,
+    recordedDate       TEXT PRIMARY KEY,
     prompt              TEXT NOT NULL,
-    created_by_user_id  TEXT REFERENCES users(id) ON DELETE SET NULL,
-    locked_at           TEXT,
-    archived_at         TEXT,
-    discord_notified_at TEXT,
-    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+    createdByUserId     TEXT REFERENCES users(id) ON DELETE SET NULL,
+    lockedAt            TEXT,
+    archivedAt          TEXT,
+    discordNotifiedAt   TEXT,
+    createdAt           TEXT NOT NULL DEFAULT (datetime('now')),
+    updatedAt           TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_daily_questions_updated_at ON daily_questions(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_daily_questions_updatedAt ON daily_questions(updatedAt DESC);
 
 CREATE TABLE IF NOT EXISTS daily_question_answers (
     id              TEXT PRIMARY KEY,
-    recorded_date   TEXT NOT NULL REFERENCES daily_questions(recorded_date) ON DELETE CASCADE,
-    user_id         TEXT REFERENCES users(id) ON DELETE SET NULL,
-    guest_name      TEXT,
-    identity_type   TEXT NOT NULL CHECK(identity_type IN ('user', 'guest')),
-    identity_key    TEXT NOT NULL,
+    recordedDate    TEXT NOT NULL REFERENCES daily_questions(recordedDate) ON DELETE CASCADE,
+    userId          TEXT REFERENCES users(id) ON DELETE SET NULL,
+    guestName       TEXT,
+    identityType    TEXT NOT NULL CHECK(identityType IN ('user', 'guest')),
+    identityKey     TEXT NOT NULL,
     answer          TEXT NOT NULL,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    createdAt       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_daily_answers_recorded_date ON daily_question_answers(recorded_date, created_at DESC);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_answers_identity ON daily_question_answers(recorded_date, identity_type, identity_key);
+CREATE INDEX IF NOT EXISTS idx_daily_answers_recordedDate ON daily_question_answers(recordedDate, createdAt DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_answers_identity ON daily_question_answers(recordedDate, identityType, identityKey);
 
 -- -------------------------------------------
 -- Shrines
