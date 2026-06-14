@@ -30,3 +30,6 @@ tmp/
 
 # Test binary
 *.test
+
+deploy.sh
+ecosystem.config.js
