@@ -3,6 +3,7 @@ package quotes
 import (
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 	"regexp"
 	"time"
@@ -36,9 +37,9 @@ func (h *handler) embedImage(c *gin.Context) {
 var datePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 func (h *handler) getQuoteOfTheDay(c *gin.Context) {
-	date := c.Query("date")
+	requestedDate := c.Query("date")
 
-	if date != "" && !datePattern.MatchString(date) {
+	if requestedDate != "" && !datePattern.MatchString(requestedDate) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "Invalid date format",
 			"details": "Use YYYY-MM-DD for the date query parameter",
@@ -46,70 +47,135 @@ func (h *handler) getQuoteOfTheDay(c *gin.Context) {
 		return
 	}
 
-	if date == "" {
-		date = time.Now().UTC().Format("2006-01-02")
+	today := time.Now().UTC().Format("2006-01-02")
+
+	// If requesting a past date, return from DB only (no fetch)
+	if requestedDate != "" && requestedDate != today {
+		snapshot := getQuoteSnapshot(h.db, requestedDate)
+		if snapshot == nil {
+			c.Header("Cache-Control", "no-store, no-cache")
+			c.JSON(http.StatusNotFound, gin.H{"error": "Quotes not found for the requested date"})
+			return
+		}
+		c.Header("Cache-Control", "no-store, no-cache")
+		c.JSON(http.StatusOK, snapshot)
+		return
 	}
 
-	// Try exact date match first, then fallback to most recent
-	var quotesJSON string
-	var fetchedAt, provider, sourceType string
-	var displayDate, publishedAt, fallbackReason sql.NullString
-
-	err := h.db.QueryRow(`
-		SELECT quotesJson, fetchedAt, provider, sourceType,
-		       displayDate, publishedAt, fallbackReason
-		FROM quote_snapshots
-		WHERE recordedDate = ?
-	`, date).Scan(&quotesJSON, &fetchedAt, &provider, &sourceType,
-		&displayDate, &publishedAt, &fallbackReason)
-
+	// For today: try to fetch fresh quotes, fallback to DB
+	snapshot, err := ensureTodaysQuote(h.db)
 	if err != nil {
-		// Try fallback to most recent snapshot
-		err = h.db.QueryRow(`
-			SELECT quotesJson, fetchedAt, provider, sourceType,
-			       displayDate, publishedAt, fallbackReason
-			FROM quote_snapshots
-			WHERE recordedDate <= ?
-			ORDER BY recordedDate DESC LIMIT 1
-		`, date).Scan(&quotesJSON, &fetchedAt, &provider, &sourceType,
-			&displayDate, &publishedAt, &fallbackReason)
-		if err != nil {
+		snapshot = getLatestQuoteSnapshot(h.db)
+		if snapshot == nil {
 			c.Header("Cache-Control", "no-store, no-cache")
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "Quotes not found for the requested date",
-			})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Quotes not found for the requested date"})
+			return
+		}
+		snapshot["stale"] = true
+		snapshot["staleReason"] = err.Error()
+	} else if requestedDate == "" && snapshot == nil {
+		// No date specified, no snapshot for today — try latest
+		snapshot = getLatestQuoteSnapshot(h.db)
+		if snapshot == nil {
+			c.Header("Cache-Control", "no-store, no-cache")
+			c.JSON(http.StatusNotFound, gin.H{"error": "Quotes not found"})
 			return
 		}
 	}
 
-	// Parse quotes from stored JSON string into array
-	var quotes []map[string]any
-	if err := json.Unmarshal([]byte(quotesJSON), &quotes); err != nil {
-		quotes = []map[string]any{}
-	}
+	c.Header("Cache-Control", "no-store, no-cache")
+	c.JSON(http.StatusOK, snapshot)
+}
 
-	resp := gin.H{
-		"recordedDate": date,
+func getQuoteSnapshot(db *sql.DB, recordedDate string) map[string]any {
+	var quotesJSON, fetchedAt, provider, sourceType string
+	var displayDate, publishedAt, fallbackReason sql.NullString
+	err := db.QueryRow(`
+		SELECT quotesJson, fetchedAt, provider, sourceType,
+		       displayDate, publishedAt, fallbackReason
+		FROM quote_snapshots WHERE recordedDate = ?
+	`, recordedDate).Scan(&quotesJSON, &fetchedAt, &provider, &sourceType,
+		&displayDate, &publishedAt, &fallbackReason)
+	if err != nil {
+		return nil
+	}
+	var quotes []map[string]any
+	json.Unmarshal([]byte(quotesJSON), &quotes)
+	resp := map[string]any{
+		"recordedDate": recordedDate,
 		"provider":     provider,
 		"sourceType":   sourceType,
 		"fetchedAt":    fetchedAt,
 		"quotes":       quotes,
 	}
-	if displayDate.Valid {
-		resp["displayDate"] = displayDate.String
+	if displayDate.Valid { resp["displayDate"] = displayDate.String }
+	if publishedAt.Valid { resp["publishedAt"] = publishedAt.String }
+	if fallbackReason.Valid { resp["fallbackReason"] = fallbackReason.String }
+	return resp
+}
+
+func getLatestQuoteSnapshot(db *sql.DB) map[string]any {
+	today := time.Now().UTC().Format("2006-01-02")
+	var recordedDate string
+	var quotesJSON, fetchedAt, provider, sourceType string
+	var displayDate, publishedAt, fallbackReason sql.NullString
+	err := db.QueryRow(`
+		SELECT recordedDate, quotesJson, fetchedAt, provider, sourceType,
+		       displayDate, publishedAt, fallbackReason
+		FROM quote_snapshots
+		WHERE recordedDate <= ? ORDER BY recordedDate DESC LIMIT 1
+	`, today).Scan(&recordedDate, &quotesJSON, &fetchedAt, &provider, &sourceType,
+		&displayDate, &publishedAt, &fallbackReason)
+	if err != nil {
+		return nil
 	}
-	if publishedAt.Valid {
-		resp["publishedAt"] = publishedAt.String
+	var quotes []map[string]any
+	json.Unmarshal([]byte(quotesJSON), &quotes)
+	resp := map[string]any{
+		"recordedDate": recordedDate,
+		"provider":     provider,
+		"sourceType":   sourceType,
+		"fetchedAt":    fetchedAt,
+		"quotes":       quotes,
 	}
-	if fallbackReason.Valid {
-		resp["fallbackReason"] = fallbackReason.String
+	if displayDate.Valid { resp["displayDate"] = displayDate.String }
+	if publishedAt.Valid { resp["publishedAt"] = publishedAt.String }
+	if fallbackReason.Valid { resp["fallbackReason"] = fallbackReason.String }
+	return resp
+}
+
+func ensureTodaysQuote(db *sql.DB) (map[string]any, error) {
+	today := time.Now().UTC().Format("2006-01-02")
+
+	// Check if we already have a fresh snapshot
+	existing := getQuoteSnapshot(db, today)
+	if existing != nil {
+		// Consider it fresh if fetched within the last hour
+		fetchedAt, _ := existing["fetchedAt"].(string)
+		if fetchedAt != "" {
+			t, err := time.Parse(time.RFC3339, fetchedAt)
+			if err == nil && time.Since(t) < time.Hour {
+				return existing, nil
+			}
+		}
 	}
 
-	c.Header("Cache-Control", "no-store, no-cache")
-	c.JSON(http.StatusOK, resp)
+	// Fetch and store
+	err := RefreshQuoteSnapshot(db, time.Now())
+	if err != nil {
+		return nil, err
+	}
+
+	return getQuoteSnapshot(db, today), nil
 }
 
 func StartQuoteScheduler(db *sql.DB, cfg *config.Config) {
+	// Run immediately on startup
+	go func() {
+		runScheduledRefresh(db, "startup")
+	}()
+
+	// Schedule daily fetch
 	go func() {
 		for {
 			now := time.Now().UTC()
@@ -118,10 +184,21 @@ func StartQuoteScheduler(db *sql.DB, cfg *config.Config) {
 			if now.After(next) {
 				next = next.Add(24 * time.Hour)
 			}
-			select {
-			case <-time.After(time.Until(next)):
-			}
-			RefreshQuoteSnapshot(db, now)
+			<-time.After(time.Until(next))
+			runScheduledRefresh(db, "daily")
 		}
 	}()
+}
+
+func runScheduledRefresh(db *sql.DB, trigger string) {
+	today := time.Now().UTC().Format("2006-01-02")
+	err := RefreshQuoteSnapshot(db, time.Now())
+	if err != nil {
+		log.Printf("[quotes] %s quote fetch failed: %v — retrying in 60s", trigger, err)
+		time.AfterFunc(60*time.Second, func() {
+			runScheduledRefresh(db, "retry")
+		})
+		return
+	}
+	log.Printf("[quotes] %s: stored latest quote snapshot for %s", trigger, today)
 }

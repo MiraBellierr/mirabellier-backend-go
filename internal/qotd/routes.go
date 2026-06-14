@@ -60,18 +60,21 @@ func (h *handler) getActiveRecordedDate() string {
 	today := time.Now().UTC().Format("2006-01-02")
 
 	var active string
+	// Carry-forward: find oldest unanswered (or locked-today) question on or before today
+	// Node.js: SELECT ... WHERE q.recordedDate <= ? ... ORDER BY q.recordedDate ASC LIMIT 1
 	err := h.db.QueryRow(`
 		SELECT q.recordedDate FROM daily_questions q
 		LEFT JOIN daily_question_answers a ON a.recordedDate = q.recordedDate
 		WHERE q.recordedDate <= ? AND q.archivedAt IS NULL
 		GROUP BY q.recordedDate
-		HAVING COUNT(a.id) = 0 OR substr(q.lockedAt, 1, 10) = ?
+		HAVING COUNT(a.id) = 0 OR substr(COALESCE(q.lockedAt,''), 1, 10) = ?
 		ORDER BY q.recordedDate ASC LIMIT 1
 	`, today, today).Scan(&active)
 	if err == nil && active != "" {
 		return active
 	}
 
+	// Fallback: today's question if exists and not archived
 	err = h.db.QueryRow(`SELECT recordedDate FROM daily_questions WHERE recordedDate = ? AND archivedAt IS NULL`, today).Scan(&active)
 	if err == nil && active != "" {
 		return active
@@ -192,7 +195,7 @@ func (h *handler) getCurrent(c *gin.Context) {
 func (h *handler) setCurrentPrompt(c *gin.Context) {
 	user := auth.GetUser(c)
 	if user == nil || !h.isOwner(user) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Not authorized"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden"})
 		return
 	}
 
@@ -204,26 +207,49 @@ func (h *handler) setCurrentPrompt(c *gin.Context) {
 		return
 	}
 
-	today := time.Now().UTC().Format("2006-01-02")
-	if len(strings.TrimSpace(input.Prompt)) > 240 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Prompt must be 240 characters or less"})
+	prompt := strings.TrimSpace(input.Prompt)
+	if prompt == "" || len(prompt) > 240 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Prompt must be 1-240 characters"})
 		return
 	}
 
-	_, err := h.db.Exec(`
-		INSERT INTO daily_questions (recordedDate, prompt, createdByUserId, createdAt, updatedAt)
-		VALUES (?, ?, ?, datetime('now'), datetime('now'))
+	today := time.Now().UTC().Format("2006-01-02")
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Node.js: upsertQuestion — INSERT or UPDATE if exists and not locked
+	result, err := h.db.Exec(`
+		INSERT INTO daily_questions (recordedDate, prompt, createdByUserId, lockedAt, archivedAt, createdAt, updatedAt)
+		VALUES (?, ?, ?, NULL, NULL, ?, ?)
 		ON CONFLICT(recordedDate) DO UPDATE SET
 			prompt = excluded.prompt,
-			updatedAt = datetime('now')
+			createdByUserId = excluded.createdByUserId,
+			updatedAt = excluded.updatedAt
 		WHERE lockedAt IS NULL
-	`, today, strings.TrimSpace(input.Prompt), user.ID)
+	`, today, prompt, user.ID, now, now)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set prompt"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "Question is locked and cannot be edited"})
+		return
+	}
+
+	// Return the updated question
+	var qPrompt, ca, ua string
+	var la, aa sql.NullString
+	h.db.QueryRow(`SELECT prompt, lockedAt, archivedAt, createdAt, updatedAt FROM daily_questions WHERE recordedDate = ?`, today).
+		Scan(&qPrompt, &la, &aa, &ca, &ua)
+	q := map[string]any{
+		"recordedDate": today, "prompt": qPrompt, "createdAt": ca, "updatedAt": ua,
+		"answerCount": 0, "isCurrent": true,
+	}
+	if la.Valid { q["lockedAt"] = la.String } else { q["lockedAt"] = nil }
+	if aa.Valid { q["archivedAt"] = aa.String } else { q["archivedAt"] = nil }
+
+	c.JSON(http.StatusOK, map[string]any{"question": q})
 }
 
 func (h *handler) submitAnswer(c *gin.Context) {
@@ -403,57 +429,67 @@ func (h *handler) queuePrompts(c *gin.Context) {
 		return
 	}
 
+	// Sanitize prompts
+	var prompts []string
+	for _, p := range input.Prompts {
+		p = strings.TrimSpace(p)
+		if p != "" && len(p) <= 240 {
+			prompts = append(prompts, p)
+		}
+	}
+	if len(prompts) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Add at least one non-empty question"})
+		return
+	}
+
 	today := time.Now().UTC().Format("2006-01-02")
+	startDate := h.getActiveRecordedDate()
 
-	// Find start date (same as active question logic)
-	var activeRecordedDate string
-	h.db.QueryRow(`SELECT recordedDate FROM daily_questions WHERE recordedDate >= ? AND archivedAt IS NULL AND lockedAt IS NULL ORDER BY recordedDate ASC LIMIT 1`, today).Scan(&activeRecordedDate)
-	startDate := activeRecordedDate
-	if startDate == "" {
-		var archivedAt sql.NullString
-		err := h.db.QueryRow(`SELECT archivedAt FROM daily_questions WHERE recordedDate = ?`, today).Scan(&archivedAt)
-		if err == nil && !archivedAt.Valid { startDate = today }
-	}
-	if startDate == "" { startDate = today }
-
-	date, _ := time.Parse("2006-01-02", startDate)
-
-	// Find the max existing recordedDate to start appending after it
-	var maxDate string
-	h.db.QueryRow(`SELECT COALESCE(MAX(recordedDate), ?) FROM daily_questions`, startDate).Scan(&maxDate)
-	if maxDate > startDate {
-		date, _ = time.Parse("2006-01-02", maxDate)
+	// Get occupied dates from startDate onward
+	rows, _ := h.db.Query(`SELECT recordedDate FROM daily_questions WHERE recordedDate >= ? ORDER BY recordedDate ASC`, startDate)
+	occupied := make(map[string]bool)
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var d string
+			rows.Scan(&d)
+			occupied[d] = true
+		}
 	}
 
+	// Insert prompts, skipping occupied dates
+	now := time.Now().UTC().Format(time.RFC3339)
 	var addedDates []string
-	inserted := 0
-	for _, prompt := range input.Prompts {
-		prompt = strings.TrimSpace(prompt)
-		if prompt == "" || len(prompt) > 240 { continue }
-		date = date.Add(24 * time.Hour)
-		recordedDate := date.Format("2006-01-02")
-		h.db.Exec(`INSERT OR IGNORE INTO daily_questions (recordedDate, prompt, createdByUserId, createdAt, updatedAt)
-			VALUES (?, ?, ?, datetime('now'), datetime('now'))`, recordedDate, prompt, user.ID)
-		addedDates = append(addedDates, recordedDate)
-		inserted++
+	nextDate := startDate
+
+	for _, prompt := range prompts {
+		for occupied[nextDate] {
+			nextDate = addDaysToDate(nextDate, 1)
+		}
+		h.db.Exec(`INSERT OR IGNORE INTO daily_questions (recordedDate, prompt, createdByUserId, lockedAt, archivedAt, createdAt, updatedAt)
+			VALUES (?, ?, ?, NULL, NULL, ?, ?)`, nextDate, prompt, user.ID, now, now)
+		occupied[nextDate] = true
+		addedDates = append(addedDates, nextDate)
+		nextDate = addDaysToDate(nextDate, 1)
 	}
 
 	// Load the added questions
 	var addedQuestions []map[string]any
 	for _, d := range addedDates {
-		var prompt, createdAt, updatedAt string
-		var lockedAt, archivedAt sql.NullString
+		var prompt, ca, ua string
+		var la, aa sql.NullString
 		err := h.db.QueryRow(`SELECT prompt, lockedAt, archivedAt, createdAt, updatedAt FROM daily_questions WHERE recordedDate = ?`, d).
-			Scan(&prompt, &lockedAt, &archivedAt, &createdAt, &updatedAt)
+			Scan(&prompt, &la, &aa, &ca, &ua)
 		if err == nil {
-			q := map[string]any{"recordedDate": d, "prompt": prompt, "createdAt": createdAt, "updatedAt": updatedAt, "answerCount": 0, "isCurrent": d == today}
-			if lockedAt.Valid { q["lockedAt"] = lockedAt.String } else { q["lockedAt"] = nil }
-			if archivedAt.Valid { q["archivedAt"] = archivedAt.String } else { q["archivedAt"] = nil }
+			q := map[string]any{"recordedDate": d, "prompt": prompt, "createdAt": ca, "updatedAt": ua, "answerCount": 0, "isCurrent": d == today}
+			if la.Valid { q["lockedAt"] = la.String } else { q["lockedAt"] = nil }
+			if aa.Valid { q["archivedAt"] = aa.String } else { q["archivedAt"] = nil }
 			addedQuestions = append(addedQuestions, q)
 		}
 	}
+	if addedQuestions == nil { addedQuestions = []map[string]any{} }
 
-	// Load all admin questions for the response
+	// Load all admin questions for response
 	allRows, _ := h.db.Query(`
 		SELECT q.recordedDate, q.prompt, q.lockedAt, q.archivedAt, q.createdAt, q.updatedAt,
 		       COALESCE(COUNT(a.id), 0) AS answerCount
@@ -481,10 +517,18 @@ func (h *handler) queuePrompts(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, gin.H{
 		"currentRecordedDate": today,
-		"addedCount":          inserted,
+		"addedCount":          len(addedDates),
 		"addedQuestions":      addedQuestions,
 		"questions":           allQuestions,
 	})
+}
+
+func addDaysToDate(dateStr string, days int) string {
+	t, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return dateStr
+	}
+	return t.AddDate(0, 0, days).Format("2006-01-02")
 }
 
 func (h *handler) forceArchive(c *gin.Context) {
@@ -637,7 +681,7 @@ func (h *handler) archiveDay(c *gin.Context) {
 func (h *handler) deleteAnswer(c *gin.Context) {
 	user := auth.GetUser(c)
 	if user == nil || !h.isOwner(user) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Not authorized"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden"})
 		return
 	}
 
@@ -659,7 +703,7 @@ func randomHex(n int) string {
 	const letters = "abcdef0123456789"
 	b := make([]byte, n)
 	for i := range b {
-		b[i] = letters[time.Now().UnixNano()%int64(len(letters))]
+		b[i] = letters[time.Now().UTC().UnixNano()%int64(len(letters))]
 	}
 	return string(b)
 }

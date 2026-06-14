@@ -7,11 +7,10 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/net/html"
 )
 
 const brainyQuoteURL = "https://www.brainyquote.com/quote_of_the_day"
@@ -76,21 +75,13 @@ func fetchBrainyQuotes() ([]map[string]any, string, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return nil, "", fmt.Errorf("brainyquote returned status %d", resp.StatusCode)
-	}
-
-	doc, err := html.Parse(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, "", err
 	}
 
-	var quotes []map[string]any
-	categories := []string{"general", "love", "art", "nature", "funny"}
-	categoryIdx := 0
-
-	extractFromHTML(doc, &quotes, &categoryIdx, categories)
-
+	htmlStr := string(body)
+	quotes := parseQuotesOfTheDayHTML(htmlStr)
 	if len(quotes) == 0 {
 		return nil, "", fmt.Errorf("no quotes found in HTML")
 	}
@@ -98,121 +89,189 @@ func fetchBrainyQuotes() ([]map[string]any, string, error) {
 	return quotes, "html", nil
 }
 
-func extractFromHTML(n *html.Node, quotes *[]map[string]any, categoryIdx *int, categories []string) {
-	if n.Type == html.ElementNode && n.Data == "a" {
-		for _, attr := range n.Attr {
-			if attr.Key == "title" && strings.Contains(attr.Val, "view quote") {
-				text := extractText(n)
-				if text != "" && *categoryIdx < len(categories) {
-					parts := strings.SplitN(text, "\n", 2)
-					quote := strings.TrimSpace(parts[0])
-					author := ""
-					if len(parts) > 1 {
-						author = strings.TrimSpace(parts[1])
-					}
-					if quote != "" {
-						*quotes = append(*quotes, map[string]any{
-							"quote":    quote,
-							"author":   author,
-							"category": categories[*categoryIdx],
-						})
-						*categoryIdx++
-					}
-				}
-			}
-		}
-	}
-	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		extractFromHTML(c, quotes, categoryIdx, categories)
-	}
+var sectionPattern = regexp.MustCompile(
+	`<h2 class="qotd-h2">\s*([^<]+?)\s*</h2>\s*` +
+		`<a[^>]+href="([^"]+)"[^>]*title="view quote"[^>]*>` +
+		`([\s\S]*?)</a>\s*` +
+		`<a[^>]+href="([^"]+)"[^>]*title="view author"[^>]*>` +
+		`([\s\S]*?)</a>`,
+)
+
+var displayDatePattern = regexp.MustCompile(`<div class="qotdSubtInf">\s*([^<]+?)\s*</div>`)
+
+var expectedCategories = []string{
+	"Quote of the Day",
+	"Love Quote of the Day",
+	"Art Quote of the Day",
+	"Nature Quote of the Day",
+	"Funny Quote Of the Day",
 }
 
-func extractText(n *html.Node) string {
-	var buf strings.Builder
-	var f func(*html.Node)
-	f = func(n *html.Node) {
-		if n.Type == html.TextNode {
-			buf.WriteString(n.Data)
+func parseQuotesOfTheDayHTML(htmlStr string) []map[string]any {
+	quotesByCat := make(map[string]map[string]any)
+
+	// Parse display date
+	var displayDate string
+	if m := displayDatePattern.FindStringSubmatch(htmlStr); m != nil {
+		displayDate = stripTags(m[1])
+	}
+
+	matches := sectionPattern.FindAllStringSubmatch(htmlStr, -1)
+	for _, m := range matches {
+		category := stripTags(m[1])
+
+		found := false
+		for _, ec := range expectedCategories {
+			if category == ec {
+				found = true
+				break
+			}
 		}
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			f(c)
+		if !found {
+			continue
+		}
+
+		quoteText := normalizeQuoteText(m[3])
+		author := stripTags(m[5])
+		if quoteText == "" || author == "" {
+			continue
+		}
+
+		quotesByCat[category] = map[string]any{
+			"category":  category,
+			"quote":     quoteText,
+			"author":    author,
+			"quoteUrl":  toAbsoluteURL(m[2]),
+			"authorUrl": toAbsoluteURL(m[4]),
+			"sourceUrl": brainyQuoteURL,
 		}
 	}
-	f(n)
-	return buf.String()
+
+	var quotes []map[string]any
+	for _, cat := range expectedCategories {
+		if q, ok := quotesByCat[cat]; ok {
+			quotes = append(quotes, q)
+		}
+	}
+
+	_ = displayDate // stored as displayDate in snapshot
+
+	return quotes
+}
+
+func stripTags(s string) string {
+	return regexp.MustCompile(`<[^>]*>`).ReplaceAllString(s, "")
+}
+
+func normalizeQuoteText(s string) string {
+	s = stripTags(s)
+	s = htmlEntityRegex.ReplaceAllStringFunc(s, func(m string) string {
+		if v, ok := htmlEntities[m]; ok {
+			return v
+		}
+		return m
+	})
+	s = strings.TrimSpace(s)
+	s = regexp.MustCompile(`\s+`).ReplaceAllString(s, " ")
+	// Strip surrounding double quotes (BrainyQuote wraps quotes in ")
+	surrounding := regexp.MustCompile(`^"(.*)"$`)
+	if m := surrounding.FindStringSubmatch(s); m != nil {
+		s = m[1]
+	}
+	return s
+}
+
+func toAbsoluteURL(href string) string {
+	if strings.HasPrefix(href, "http") {
+		return href
+	}
+	if strings.HasPrefix(href, "/") {
+		return "https://www.brainyquote.com" + href
+	}
+	return "https://www.brainyquote.com/" + href
+}
+
+var htmlEntityRegex = regexp.MustCompile(`&[a-z]+;`)
+
+var htmlEntities = map[string]string{
+	"&amp;":   "&",
+	"&apos;":  "'",
+	"&copy;":  "(c)",
+	"&gt;":    ">",
+	"&hellip;": "...",
+	"&laquo;": "\"",
+	"&ldquo;": "\"",
+	"&lsquo;": "'",
+	"&lt;":    "<",
+	"&mdash;": "-",
+	"&nbsp;":  " ",
+	"&ndash;": "-",
+	"&quot;":  "\"",
+	"&raquo;": "\"",
+	"&rdquo;": "\"",
+	"&rsquo;": "'",
+	"&trade;": "TM",
 }
 
 func fetchBrainyQuotesRSS() ([]map[string]any, string, error) {
 	client := &http.Client{Timeout: 15 * time.Second}
-	var lastErr error
 
-	for _, feedURL := range rssFeedURLs {
-		req, _ := http.NewRequest("GET", feedURL, nil)
-		req.Header.Set("User-Agent", randomUA())
-
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		if resp.StatusCode != 200 {
-			continue
-		}
-
-		quotes := parseRSSXML(string(body))
-		if len(quotes) > 0 {
-			return quotes, "rss", nil
-		}
+	type rssFeed struct {
+		category string
+		url      string
 	}
-
-	if lastErr != nil {
-		return nil, "", lastErr
-	}
-	return nil, "", fmt.Errorf("all RSS feeds returned no quotes")
-}
-
-func parseRSSXML(xmlContent string) []map[string]any {
-	doc, err := html.Parse(strings.NewReader(xmlContent))
-	if err != nil {
-		return nil
+	feeds := []rssFeed{
+		{"Quote of the Day", "https://www.brainyquote.com/link/quotebr.rss"},
+		{"Love Quote of the Day", "https://www.brainyquote.com/link/quotelo.rss"},
+		{"Art Quote of the Day", "https://www.brainyquote.com/link/quotear.rss"},
+		{"Nature Quote of the Day", "https://www.brainyquote.com/link/quotena.rss"},
+		{"Funny Quote Of the Day", "https://www.brainyquote.com/link/quotefu.rss"},
 	}
 
 	var quotes []map[string]any
-	var f func(*html.Node)
-	f = func(n *html.Node) {
-		if n.Type == html.ElementNode && n.Data == "item" {
-			var title, description string
-			for c := n.FirstChild; c != nil; c = c.NextSibling {
-				if c.Type == html.ElementNode {
-					switch c.Data {
-					case "title":
-						title = extractText(c)
-					case "description":
-						description = extractText(c)
-					}
-				}
-			}
-			if title != "" {
-				quote := map[string]any{
-					"quote":  title,
-					"author": description,
-				}
-				quotes = append(quotes, quote)
-			}
-		}
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			f(c)
-		}
-	}
-	f(doc)
 
-	return quotes
+	for _, feed := range feeds {
+		req, _ := http.NewRequest("GET", feed.url, nil)
+		req.Header.Set("User-Agent", randomUA())
+		req.Header.Set("Accept", "application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.8")
+
+		resp, err := client.Do(req)
+		if err != nil { continue }
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != 200 { continue }
+
+		// Match first <item> block
+		itemRe := regexp.MustCompile(`<item>([\s\S]*?)</item>`)
+		itemMatch := itemRe.FindStringSubmatch(string(body))
+		if itemMatch == nil { continue }
+
+		itemXML := itemMatch[1]
+		quote := normalizeQuoteText(getXMLTag(itemXML, "description"))
+		author := stripTags(getXMLTag(itemXML, "title"))
+		if quote == "" || author == "" { continue }
+
+		quotes = append(quotes, map[string]any{
+			"category":  feed.category,
+			"quote":     quote,
+			"author":    author,
+			"sourceUrl": feed.url,
+		})
+	}
+
+	if len(quotes) == 0 {
+		return nil, "", fmt.Errorf("all RSS feeds returned no quotes")
+	}
+
+	return quotes, "rss", nil
+}
+
+func getXMLTag(xml, tag string) string {
+	re := regexp.MustCompile(`<` + tag + `[^>]*>([\s\S]*?)</` + tag + `>`)
+	m := re.FindStringSubmatch(xml)
+	if m != nil {
+		return m[1]
+	}
+	return ""
 }

@@ -42,7 +42,12 @@ func main() {
 	}
 
 	quotes.StartQuoteScheduler(db, cfg)
-	qotd.StartDiscordScheduler(db, cfg)
+	qotd.StartDiscordScheduler(db, &qotd.DiscordConfig{
+		QOTDDiscordWebhookURL:       cfg.QOTDDiscordWebhookURL,
+		QOTDDiscordWebhookUsername:  cfg.QOTDDiscordWebhookUsername,
+		QOTDDiscordWebhookAvatarURL: cfg.QOTDDiscordWebhookAvatarURL,
+		WebsiteBase:                 cfg.WebsiteBase,
+	})
 
 	if os.Getenv("GIN_MODE") == "" {
 		gin.SetMode(gin.ReleaseMode)
