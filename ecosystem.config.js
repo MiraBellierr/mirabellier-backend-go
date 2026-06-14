@@ -3,7 +3,7 @@ module.exports = {
     {
       name: "mirabellier-go",
       script: "./server",
-      cwd: "/var/www/mirabellier-backend-go",
+      cwd: "/srv/mirabellier-backend-go",
       env: {
         PORT: "5000",
         DB_FILE: "./database.sqlite3",
