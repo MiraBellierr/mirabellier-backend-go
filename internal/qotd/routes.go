@@ -3,6 +3,7 @@ package qotd
 import (
 	"database/sql"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ type Config struct {
 	QOTDDiscordWebhookURL       string
 	QOTDDiscordWebhookUsername  string
 	QOTDDiscordWebhookAvatarURL string
+	OwnerDiscordIDs             []string
 }
 
 func RegisterRoutes(r *gin.RouterGroup, db *sql.DB, cfg *Config) {
@@ -38,6 +40,14 @@ type handler struct {
 	cfg *Config
 }
 
+func (h *handler) isOwner(user *auth.User) bool {
+	if user == nil || user.DiscordID == nil { return false }
+	for _, id := range h.cfg.OwnerDiscordIDs {
+		if *user.DiscordID == id { return true }
+	}
+	return false
+}
+
 func (h *handler) seoPage(c *gin.Context) {
 	c.Redirect(http.StatusTemporaryRedirect, "/")
 }
@@ -46,38 +56,61 @@ func (h *handler) embedImage(c *gin.Context) {
 	c.JSON(http.StatusNotImplemented, gin.H{"error": "not implemented"})
 }
 
+func (h *handler) getActiveRecordedDate() string {
+	today := time.Now().UTC().Format("2006-01-02")
+
+	var active string
+	err := h.db.QueryRow(`
+		SELECT q.recordedDate FROM daily_questions q
+		LEFT JOIN daily_question_answers a ON a.recordedDate = q.recordedDate
+		WHERE q.recordedDate <= ? AND q.archivedAt IS NULL
+		GROUP BY q.recordedDate
+		HAVING COUNT(a.id) = 0 OR substr(q.lockedAt, 1, 10) = ?
+		ORDER BY q.recordedDate ASC LIMIT 1
+	`, today, today).Scan(&active)
+	if err == nil && active != "" {
+		return active
+	}
+
+	err = h.db.QueryRow(`SELECT recordedDate FROM daily_questions WHERE recordedDate = ? AND archivedAt IS NULL`, today).Scan(&active)
+	if err == nil && active != "" {
+		return active
+	}
+
+	return today
+}
+
 func (h *handler) getCurrent(c *gin.Context) {
 	today := time.Now().UTC().Format("2006-01-02")
 
-	// Carry-forward logic: if today has no question, check for unanswered future ones
+	activeDate := h.getActiveRecordedDate()
+
 	var prompt string
-	var lockedAt sql.NullString
-	err := h.db.QueryRow(`
-		SELECT prompt, lockedAt FROM daily_questions
-		WHERE recordedDate = ? AND archivedAt IS NULL
-	`, today).Scan(&prompt, &lockedAt)
+	var lockedAt, archivedAt sql.NullString
+	var questionCreatedAt, questionUpdatedAt string
+	err := h.db.QueryRow(`SELECT prompt, lockedAt, archivedAt, createdAt, updatedAt FROM daily_questions WHERE recordedDate = ?`, activeDate).
+		Scan(&prompt, &lockedAt, &archivedAt, &questionCreatedAt, &questionUpdatedAt)
 	if err != nil {
-		// Try carry-forward from future
-		err = h.db.QueryRow(`
-			SELECT prompt, lockedAt FROM daily_questions
-			WHERE recordedDate > ? AND archivedAt IS NULL AND lockedAt IS NULL
-			ORDER BY recordedDate ASC LIMIT 1
-		`, today).Scan(&prompt, &lockedAt)
-		if err != nil {
-			c.JSON(http.StatusOK, gin.H{"currentRecordedDate": nil, "question": nil, "answers": []interface{}{}})
-			return
-		}
+		c.JSON(http.StatusOK, gin.H{
+			"currentRecordedDate": today,
+			"question":            nil,
+			"answers":             []interface{}{},
+			"canAnswer":           false,
+			"hasAnswered":         false,
+			"viewerMode":          "guest",
+		})
+		return
 	}
 
-	// Fetch answers
+	// Fetch answers for the active question's recordedDate
 	rows, err := h.db.Query(`
-		SELECT a.id, a.userId, a.guestName, a.identityType, a.identityKey, a.answer, a.createdAt,
+		SELECT a.id, a.userId, a.guestName, a.answer, a.createdAt,
 		       u.username, u.avatar
 		FROM daily_question_answers a
 		LEFT JOIN users u ON u.id = a.userId
 		WHERE a.recordedDate = ?
 		ORDER BY a.createdAt ASC
-	`, today)
+	`, activeDate)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch answers"})
 		return
@@ -100,34 +133,27 @@ func (h *handler) getCurrent(c *gin.Context) {
 	var answers []Answer
 	for rows.Next() {
 		var a Answer
-		a.RecordedDate = today
+		a.RecordedDate = activeDate
 		var userID sql.NullString
 		var username, avatar sql.NullString
 		var guestName sql.NullString
 		var answerText, createdAt, id string
-		var identityType, identityKey string
-		rows.Scan(&id, &userID, &guestName, &identityType, &identityKey, &answerText, &createdAt, &username, &avatar)
+		rows.Scan(&id, &userID, &guestName, &answerText, &createdAt, &username, &avatar)
 		a.ID = id
 		a.Answer = answerText
 		a.CreatedAt = createdAt
-		if guestName.Valid {
-			a.GuestName = &guestName.String
-		}
+		if guestName.Valid { a.GuestName = &guestName.String }
 		if userID.Valid && username.Valid {
 			a.User = &struct {
 				ID       string  `json:"id,omitempty"`
 				Username string  `json:"username,omitempty"`
 				Avatar   *string `json:"avatar,omitempty"`
 			}{ID: userID.String, Username: username.String}
-			if avatar.Valid {
-				a.User.Avatar = &avatar.String
-			}
+			if avatar.Valid { a.User.Avatar = &avatar.String }
 		}
 		answers = append(answers, a)
 	}
-	if answers == nil {
-		answers = []Answer{}
-	}
+	if answers == nil { answers = []Answer{} }
 
 	// Viewer state
 	hasAnswered := false
@@ -143,26 +169,29 @@ func (h *handler) getCurrent(c *gin.Context) {
 		}
 	}
 
+	// Build question object
+	q := map[string]any{
+		"recordedDate": activeDate,
+		"prompt":       prompt,
+		"createdAt":    questionCreatedAt,
+		"updatedAt":    questionUpdatedAt,
+	}
+	if lockedAt.Valid { q["lockedAt"] = lockedAt.String } else { q["lockedAt"] = nil }
+	if archivedAt.Valid { q["archivedAt"] = archivedAt.String } else { q["archivedAt"] = nil }
+
 	c.JSON(http.StatusOK, gin.H{
-		"currentRecordedDate": today,
-		"question": gin.H{
-			"recordedDate": today,
-			"prompt":       prompt,
-			"lockedAt":     lockedAt,
-			"archivedAt":   nil,
-			"createdAt":    today,
-			"updatedAt":    today,
-		},
-		"answers":     answers,
-		"canAnswer":   !hasAnswered,
-		"hasAnswered": hasAnswered,
-		"viewerMode":  viewerMode,
+		"currentRecordedDate": activeDate,
+		"question":            q,
+		"answers":             answers,
+		"canAnswer":           !hasAnswered,
+		"hasAnswered":         hasAnswered,
+		"viewerMode":          viewerMode,
 	})
 }
 
 func (h *handler) setCurrentPrompt(c *gin.Context) {
 	user := auth.GetUser(c)
-	if user == nil || !auth.IsOwner(user, nil) {
+	if user == nil || !h.isOwner(user) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Not authorized"})
 		return
 	}
@@ -213,7 +242,7 @@ func (h *handler) submitAnswer(c *gin.Context) {
 		return
 	}
 
-	today := time.Now().UTC().Format("2006-01-02")
+	activeDate := h.getActiveRecordedDate()
 	user := auth.GetUser(c)
 
 	answerID := "qa_" + time.Now().UTC().Format("20060102150405") + "_" + randomHex(4)
@@ -222,14 +251,14 @@ func (h *handler) submitAnswer(c *gin.Context) {
 		_, err := h.db.Exec(`
 			INSERT INTO daily_question_answers (id, recordedDate, userId, identityType, identityKey, answer, createdAt)
 			VALUES (?, ?, ?, 'user', ?, ?, datetime('now'))
-		`, answerID, today, user.ID, user.ID, strings.TrimSpace(input.Answer))
+		`, answerID, activeDate, user.ID, user.ID, strings.TrimSpace(input.Answer))
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"error": "You have already answered today's question"})
 			return
 		}
 
 		// Lock question
-		h.db.Exec("UPDATE daily_questions SET lockedAt = datetime('now') WHERE recordedDate = ? AND lockedAt IS NULL", today)
+		h.db.Exec("UPDATE daily_questions SET lockedAt = datetime('now') WHERE recordedDate = ? AND lockedAt IS NULL", activeDate)
 	} else {
 		guestToken := strings.TrimSpace(input.GuestToken)
 		if guestToken == "" || !strings.HasPrefix(guestToken, "qotd:guest:") || len(guestToken) < 20 {
@@ -245,39 +274,384 @@ func (h *handler) submitAnswer(c *gin.Context) {
 		_, err := h.db.Exec(`
 			INSERT INTO daily_question_answers (id, recordedDate, guestName, identityType, identityKey, answer, createdAt)
 			VALUES (?, ?, ?, 'guest', ?, ?, datetime('now'))
-		`, answerID, today, name, guestToken, strings.TrimSpace(input.Answer))
+		`, answerID, activeDate, name, guestToken, strings.TrimSpace(input.Answer))
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"error": "This guest has already answered today's question"})
 			return
 		}
 
-		h.db.Exec("UPDATE daily_questions SET lockedAt = datetime('now') WHERE recordedDate = ? AND lockedAt IS NULL", today)
+		h.db.Exec("UPDATE daily_questions SET lockedAt = datetime('now') WHERE recordedDate = ? AND lockedAt IS NULL", activeDate)
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"ok": true})
 }
 
 func (h *handler) adminQueue(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"questions": []interface{}{}, "total": 0})
+	user := auth.GetUser(c)
+	if user == nil || !h.isOwner(user) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden"})
+		return
+	}
+
+	today := time.Now().UTC().Format("2006-01-02")
+
+	// Find active question's recordedDate (same as getActiveQuestionRow)
+	var activeRecordedDate string
+	err := h.db.QueryRow(`
+		SELECT recordedDate FROM daily_questions
+		WHERE recordedDate >= ? AND archivedAt IS NULL AND lockedAt IS NULL
+		ORDER BY recordedDate ASC LIMIT 1
+	`, today).Scan(&activeRecordedDate)
+	if err != nil {
+		// Check if today's question exists and is not archived
+		var archivedAt sql.NullString
+		err = h.db.QueryRow(`SELECT archivedAt FROM daily_questions WHERE recordedDate = ?`, today).Scan(&archivedAt)
+		if err == nil && !archivedAt.Valid {
+			activeRecordedDate = today
+		}
+	}
+	startDate := activeRecordedDate
+	if startDate == "" {
+		startDate = today
+	}
+
+	// Pagination
+	pageSize := 5
+	if ps := c.Query("pageSize"); ps != "" {
+		if n, err := strconv.Atoi(ps); err == nil && n >= 1 && n <= 50 {
+			pageSize = n
+		}
+	}
+
+	var totalQuestions int
+	h.db.QueryRow(`SELECT COUNT(*) FROM daily_questions WHERE recordedDate >= ? AND archivedAt IS NULL`, startDate).Scan(&totalQuestions)
+
+	totalPages := 0
+	if totalQuestions > 0 {
+		totalPages = (totalQuestions + pageSize - 1) / pageSize
+	}
+
+	page := 1
+	if p := c.Query("page"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil && n >= 1 && n <= totalPages {
+			page = n
+		}
+	}
+
+	offset := (page - 1) * pageSize
+
+	rows, err := h.db.Query(`
+		SELECT q.recordedDate, q.prompt, q.lockedAt, q.archivedAt, q.createdAt, q.updatedAt,
+		       COALESCE(COUNT(a.id), 0) AS answerCount
+		FROM daily_questions q
+		LEFT JOIN daily_question_answers a ON a.recordedDate = q.recordedDate
+		WHERE q.recordedDate >= ? AND q.archivedAt IS NULL
+		GROUP BY q.recordedDate, q.prompt, q.lockedAt, q.archivedAt, q.createdAt, q.updatedAt
+		ORDER BY q.recordedDate ASC
+		LIMIT ? OFFSET ?
+	`, startDate, pageSize, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch questions"})
+		return
+	}
+	defer rows.Close()
+
+	var questions []map[string]any
+	for rows.Next() {
+		var recordedDate, prompt, createdAt, updatedAt string
+		var lockedAt, archivedAt sql.NullString
+		var answerCount int
+		rows.Scan(&recordedDate, &prompt, &lockedAt, &archivedAt, &createdAt, &updatedAt, &answerCount)
+		q := map[string]any{
+			"recordedDate": recordedDate,
+			"prompt":       prompt,
+			"createdAt":    createdAt,
+			"updatedAt":    updatedAt,
+			"answerCount":  answerCount,
+			"isCurrent":    recordedDate == activeRecordedDate,
+		}
+		if lockedAt.Valid { q["lockedAt"] = lockedAt.String } else { q["lockedAt"] = nil }
+		if archivedAt.Valid { q["archivedAt"] = archivedAt.String } else { q["archivedAt"] = nil }
+		questions = append(questions, q)
+	}
+	if questions == nil { questions = []map[string]any{} }
+
+	c.JSON(http.StatusOK, gin.H{
+		"currentRecordedDate": today,
+		"page":                page,
+		"pageSize":            pageSize,
+		"totalQuestions":      totalQuestions,
+		"totalPages":          totalPages,
+		"hasPreviousPage":     page > 1,
+		"hasNextPage":         totalPages > 0 && page < totalPages,
+		"questions":           questions,
+	})
 }
 
 func (h *handler) queuePrompts(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	user := auth.GetUser(c)
+	if user == nil || !h.isOwner(user) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden"})
+		return
+	}
+
+	var input struct {
+		Prompts []string `json:"prompts" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil || len(input.Prompts) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Add at least one non-empty question"})
+		return
+	}
+
+	today := time.Now().UTC().Format("2006-01-02")
+
+	// Find start date (same as active question logic)
+	var activeRecordedDate string
+	h.db.QueryRow(`SELECT recordedDate FROM daily_questions WHERE recordedDate >= ? AND archivedAt IS NULL AND lockedAt IS NULL ORDER BY recordedDate ASC LIMIT 1`, today).Scan(&activeRecordedDate)
+	startDate := activeRecordedDate
+	if startDate == "" {
+		var archivedAt sql.NullString
+		err := h.db.QueryRow(`SELECT archivedAt FROM daily_questions WHERE recordedDate = ?`, today).Scan(&archivedAt)
+		if err == nil && !archivedAt.Valid { startDate = today }
+	}
+	if startDate == "" { startDate = today }
+
+	date, _ := time.Parse("2006-01-02", startDate)
+
+	// Find the max existing recordedDate to start appending after it
+	var maxDate string
+	h.db.QueryRow(`SELECT COALESCE(MAX(recordedDate), ?) FROM daily_questions`, startDate).Scan(&maxDate)
+	if maxDate > startDate {
+		date, _ = time.Parse("2006-01-02", maxDate)
+	}
+
+	var addedDates []string
+	inserted := 0
+	for _, prompt := range input.Prompts {
+		prompt = strings.TrimSpace(prompt)
+		if prompt == "" || len(prompt) > 240 { continue }
+		date = date.Add(24 * time.Hour)
+		recordedDate := date.Format("2006-01-02")
+		h.db.Exec(`INSERT OR IGNORE INTO daily_questions (recordedDate, prompt, createdByUserId, createdAt, updatedAt)
+			VALUES (?, ?, ?, datetime('now'), datetime('now'))`, recordedDate, prompt, user.ID)
+		addedDates = append(addedDates, recordedDate)
+		inserted++
+	}
+
+	// Load the added questions
+	var addedQuestions []map[string]any
+	for _, d := range addedDates {
+		var prompt, createdAt, updatedAt string
+		var lockedAt, archivedAt sql.NullString
+		err := h.db.QueryRow(`SELECT prompt, lockedAt, archivedAt, createdAt, updatedAt FROM daily_questions WHERE recordedDate = ?`, d).
+			Scan(&prompt, &lockedAt, &archivedAt, &createdAt, &updatedAt)
+		if err == nil {
+			q := map[string]any{"recordedDate": d, "prompt": prompt, "createdAt": createdAt, "updatedAt": updatedAt, "answerCount": 0, "isCurrent": d == today}
+			if lockedAt.Valid { q["lockedAt"] = lockedAt.String } else { q["lockedAt"] = nil }
+			if archivedAt.Valid { q["archivedAt"] = archivedAt.String } else { q["archivedAt"] = nil }
+			addedQuestions = append(addedQuestions, q)
+		}
+	}
+
+	// Load all admin questions for the response
+	allRows, _ := h.db.Query(`
+		SELECT q.recordedDate, q.prompt, q.lockedAt, q.archivedAt, q.createdAt, q.updatedAt,
+		       COALESCE(COUNT(a.id), 0) AS answerCount
+		FROM daily_questions q
+		LEFT JOIN daily_question_answers a ON a.recordedDate = q.recordedDate
+		WHERE q.recordedDate >= ? AND q.archivedAt IS NULL
+		GROUP BY q.recordedDate, q.prompt, q.lockedAt, q.archivedAt, q.createdAt, q.updatedAt
+		ORDER BY q.recordedDate ASC
+	`, startDate)
+	var allQuestions []map[string]any
+	if allRows != nil {
+		defer allRows.Close()
+		for allRows.Next() {
+			var rd, p, ca, ua string
+			var la, aa sql.NullString
+			var ac int
+			allRows.Scan(&rd, &p, &la, &aa, &ca, &ua, &ac)
+			q := map[string]any{"recordedDate": rd, "prompt": p, "createdAt": ca, "updatedAt": ua, "answerCount": ac, "isCurrent": rd == today}
+			if la.Valid { q["lockedAt"] = la.String } else { q["lockedAt"] = nil }
+			if aa.Valid { q["archivedAt"] = aa.String } else { q["archivedAt"] = nil }
+			allQuestions = append(allQuestions, q)
+		}
+	}
+	if allQuestions == nil { allQuestions = []map[string]any{} }
+
+	c.JSON(http.StatusCreated, gin.H{
+		"currentRecordedDate": today,
+		"addedCount":          inserted,
+		"addedQuestions":      addedQuestions,
+		"questions":           allQuestions,
+	})
 }
 
 func (h *handler) forceArchive(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	user := auth.GetUser(c)
+	if user == nil || !h.isOwner(user) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden"})
+		return
+	}
+
+	today := time.Now().UTC().Format("2006-01-02")
+
+	// Check if there's an active question to archive
+	var prompt string
+	var lockedAt sql.NullString
+	err := h.db.QueryRow(`SELECT prompt, lockedAt FROM daily_questions WHERE recordedDate = ? AND archivedAt IS NULL ORDER BY recordedDate ASC LIMIT 1`, today).Scan(&prompt, &lockedAt)
+	if err != nil {
+		// Try carry-forward
+		err = h.db.QueryRow(`SELECT prompt, lockedAt FROM daily_questions WHERE recordedDate >= ? AND archivedAt IS NULL ORDER BY recordedDate ASC LIMIT 1`, today).Scan(&prompt, &lockedAt)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "No active question to archive"})
+			return
+		}
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	h.db.Exec("UPDATE daily_questions SET archivedAt = ?, updatedAt = ? WHERE recordedDate = ? AND archivedAt IS NULL", now, now, today)
+
+	// Return archived question
+	var recordedDate, createdAt, updatedAt string
+	var la, aa sql.NullString
+	err = h.db.QueryRow(`SELECT recordedDate, prompt, lockedAt, archivedAt, createdAt, updatedAt FROM daily_questions WHERE recordedDate = ?`, today).Scan(&recordedDate, &prompt, &la, &aa, &createdAt, &updatedAt)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+		return
+	}
+
+	q := map[string]any{"recordedDate": recordedDate, "prompt": prompt, "createdAt": createdAt, "updatedAt": updatedAt, "answerCount": 0, "isCurrent": false}
+	if la.Valid { q["lockedAt"] = la.String } else { q["lockedAt"] = nil }
+	if aa.Valid { q["archivedAt"] = aa.String } else { q["archivedAt"] = nil }
+
+	c.JSON(http.StatusOK, map[string]any{"archivedQuestion": q})
 }
 
 func (h *handler) archive(c *gin.Context) {
-	c.JSON(http.StatusOK, []interface{}{})
+	today := time.Now().UTC().Format("2006-01-02")
+
+	// Archive cutoff: active question's date or today (whichever is earlier)
+	// Questions with recordedDate < cutoff OR explicitly archived are shown
+	cutoffDate := today
+	var activeDate string
+	if err := h.db.QueryRow(`SELECT recordedDate FROM daily_questions WHERE recordedDate >= ? AND archivedAt IS NULL ORDER BY recordedDate ASC LIMIT 1`, today).Scan(&activeDate); err == nil && activeDate != "" {
+		cutoffDate = activeDate
+	}
+
+	rows, err := h.db.Query(`
+		SELECT q.recordedDate, q.prompt, q.createdAt, q.updatedAt,
+		       COALESCE(COUNT(a.id), 0) AS answerCount
+		FROM daily_questions q
+		LEFT JOIN daily_question_answers a ON a.recordedDate = q.recordedDate
+		WHERE q.archivedAt IS NOT NULL OR q.recordedDate < ?
+		GROUP BY q.recordedDate, q.prompt, q.createdAt, q.updatedAt
+		ORDER BY q.recordedDate DESC
+	`, cutoffDate)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load question archive"})
+		return
+	}
+	defer rows.Close()
+
+	var entries []map[string]any
+	for rows.Next() {
+		var rd, prompt, ca, ua string
+		var ac int
+		rows.Scan(&rd, &prompt, &ca, &ua, &ac)
+		entries = append(entries, map[string]any{
+			"recordedDate": rd,
+			"prompt":       prompt,
+			"answerCount":  ac,
+			"createdAt":    ca,
+			"updatedAt":    ua,
+		})
+	}
+	if entries == nil { entries = []map[string]any{} }
+
+	c.JSON(http.StatusOK, entries)
 }
 
 func (h *handler) archiveDay(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{})
+	recordedDate := c.Param("recordedDate")
+
+	today := time.Now().UTC().Format("2006-01-02")
+	cutoffDate := today
+	var activeDate string
+	if err := h.db.QueryRow(`SELECT recordedDate FROM daily_questions WHERE recordedDate >= ? AND archivedAt IS NULL ORDER BY recordedDate ASC LIMIT 1`, today).Scan(&activeDate); err == nil && activeDate != "" {
+		cutoffDate = activeDate
+	}
+
+	var prompt, ca, ua string
+	var lockedAt, archivedAt sql.NullString
+	err := h.db.QueryRow(`SELECT prompt, lockedAt, archivedAt, createdAt, updatedAt FROM daily_questions WHERE recordedDate = ? AND (archivedAt IS NOT NULL OR recordedDate < ?)`, recordedDate, cutoffDate).
+		Scan(&prompt, &lockedAt, &archivedAt, &ca, &ua)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Archived question not found"})
+		return
+	}
+
+	rows, err := h.db.Query(`
+		SELECT a.id, a.userId, a.guestName, a.identityType, a.identityKey, a.answer, a.createdAt,
+		       u.username, u.avatar
+		FROM daily_question_answers a
+		LEFT JOIN users u ON u.id = a.userId
+		WHERE a.recordedDate = ? ORDER BY a.createdAt ASC
+	`, recordedDate)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch answers"})
+		return
+	}
+	defer rows.Close()
+
+	var answers []map[string]any
+	for rows.Next() {
+		var id, ans, createdAt, identityType, identityKey string
+		var userID, guestName, username sql.NullString
+		var avatar sql.NullString
+		rows.Scan(&id, &userID, &guestName, &identityType, &identityKey, &ans, &createdAt, &username, &avatar)
+		a := map[string]any{"id": id, "recordedDate": recordedDate, "answer": ans, "createdAt": createdAt}
+		if guestName.Valid { a["guestName"] = guestName.String }
+		if username.Valid {
+			uo := map[string]any{"username": username.String}
+			if userID.Valid { uo["id"] = userID.String }
+			if avatar.Valid { uo["avatar"] = avatar.String }
+			a["user"] = uo
+		}
+		answers = append(answers, a)
+	}
+	if answers == nil { answers = []map[string]any{} }
+
+	q := map[string]any{"recordedDate": recordedDate, "prompt": prompt, "createdAt": ca, "updatedAt": ua}
+	if lockedAt.Valid { q["lockedAt"] = lockedAt.String } else { q["lockedAt"] = nil }
+	if archivedAt.Valid { q["archivedAt"] = archivedAt.String } else { q["archivedAt"] = nil }
+
+	c.JSON(http.StatusOK, map[string]any{
+		"recordedDate": recordedDate,
+		"question":     q,
+		"answers":      answers,
+		"answerCount":  len(answers),
+	})
 }
 
 func (h *handler) deleteAnswer(c *gin.Context) {
+	user := auth.GetUser(c)
+	if user == nil || !h.isOwner(user) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Not authorized"})
+		return
+	}
+
+	id := c.Param("id")
+	result, err := h.db.Exec("DELETE FROM daily_question_answers WHERE id = ?", id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete answer"})
+		return
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Answer not found"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

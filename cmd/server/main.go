@@ -139,6 +139,7 @@ func qotdConfig(cfg *config.Config) *qotd.Config {
 		QOTDDiscordWebhookURL:       cfg.QOTDDiscordWebhookURL,
 		QOTDDiscordWebhookUsername:  cfg.QOTDDiscordWebhookUsername,
 		QOTDDiscordWebhookAvatarURL: cfg.QOTDDiscordWebhookAvatarURL,
+		OwnerDiscordIDs:             cfg.OwnerDiscordIDs,
 	}
 }
 
