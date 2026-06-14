@@ -320,26 +320,7 @@ func (h *handler) adminQueue(c *gin.Context) {
 	}
 
 	today := time.Now().UTC().Format("2006-01-02")
-
-	// Find active question's recordedDate (same as getActiveQuestionRow)
-	var activeRecordedDate string
-	err := h.db.QueryRow(`
-		SELECT recordedDate FROM daily_questions
-		WHERE recordedDate >= ? AND archivedAt IS NULL AND lockedAt IS NULL
-		ORDER BY recordedDate ASC LIMIT 1
-	`, today).Scan(&activeRecordedDate)
-	if err != nil {
-		// Check if today's question exists and is not archived
-		var archivedAt sql.NullString
-		err = h.db.QueryRow(`SELECT archivedAt FROM daily_questions WHERE recordedDate = ?`, today).Scan(&archivedAt)
-		if err == nil && !archivedAt.Valid {
-			activeRecordedDate = today
-		}
-	}
-	startDate := activeRecordedDate
-	if startDate == "" {
-		startDate = today
-	}
+	startDate := h.getActiveRecordedDate()
 
 	// Pagination
 	pageSize := 5
@@ -394,7 +375,7 @@ func (h *handler) adminQueue(c *gin.Context) {
 			"createdAt":    createdAt,
 			"updatedAt":    updatedAt,
 			"answerCount":  answerCount,
-			"isCurrent":    recordedDate == activeRecordedDate,
+			"isCurrent":    recordedDate == startDate,
 		}
 		if lockedAt.Valid { q["lockedAt"] = lockedAt.String } else { q["lockedAt"] = nil }
 		if archivedAt.Valid { q["archivedAt"] = archivedAt.String } else { q["archivedAt"] = nil }
@@ -573,15 +554,8 @@ func (h *handler) forceArchive(c *gin.Context) {
 }
 
 func (h *handler) archive(c *gin.Context) {
-	today := time.Now().UTC().Format("2006-01-02")
-
-	// Archive cutoff: active question's date or today (whichever is earlier)
-	// Questions with recordedDate < cutoff OR explicitly archived are shown
-	cutoffDate := today
-	var activeDate string
-	if err := h.db.QueryRow(`SELECT recordedDate FROM daily_questions WHERE recordedDate >= ? AND archivedAt IS NULL ORDER BY recordedDate ASC LIMIT 1`, today).Scan(&activeDate); err == nil && activeDate != "" {
-		cutoffDate = activeDate
-	}
+	// Archive cutoff: active question's date or today
+	cutoffDate := h.getActiveRecordedDate()
 
 	rows, err := h.db.Query(`
 		SELECT q.recordedDate, q.prompt, q.createdAt, q.updatedAt,
@@ -619,12 +593,7 @@ func (h *handler) archive(c *gin.Context) {
 func (h *handler) archiveDay(c *gin.Context) {
 	recordedDate := c.Param("recordedDate")
 
-	today := time.Now().UTC().Format("2006-01-02")
-	cutoffDate := today
-	var activeDate string
-	if err := h.db.QueryRow(`SELECT recordedDate FROM daily_questions WHERE recordedDate >= ? AND archivedAt IS NULL ORDER BY recordedDate ASC LIMIT 1`, today).Scan(&activeDate); err == nil && activeDate != "" {
-		cutoffDate = activeDate
-	}
+	cutoffDate := h.getActiveRecordedDate()
 
 	var prompt, ca, ua string
 	var lockedAt, archivedAt sql.NullString
