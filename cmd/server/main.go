@@ -1,3 +1,4 @@
+// (◕‿◕) ✨ mirabellier ~ a cozy little corner of the internet!
 package main
 
 import (
