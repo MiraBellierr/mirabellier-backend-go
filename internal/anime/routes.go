@@ -7,10 +7,13 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mirabellier/mirabellier-backend-go/internal/embed"
+	"github.com/mirabellier/mirabellier-backend-go/internal/seo"
 )
 
 type Config struct {
@@ -18,27 +21,28 @@ type Config struct {
 	MALUsername            string
 	MALAnimeRefreshMinutes int
 	FrontendURL            string
+	WebsiteBase            string
 }
 
 type AnimeFeedPayload struct {
-	Source    string               `json:"source"`
-	Username  string               `json:"username"`
-	FetchedAt string               `json:"fetchedAt"`
-	Stale     bool                 `json:"stale"`
-	Items     []AnimeFeedItem      `json:"items"`
+	Source    string          `json:"source"`
+	Username  string          `json:"username"`
+	FetchedAt string          `json:"fetchedAt"`
+	Stale     bool            `json:"stale"`
+	Items     []AnimeFeedItem `json:"items"`
 }
 
 type AnimeFeedItem struct {
-	MalID            int         `json:"malId"`
-	Title            string      `json:"title"`
-	URL              string      `json:"url"`
-	CoverImage       *string     `json:"coverImage"`
-	MediaType        *string     `json:"mediaType"`
-	WatchedEpisodes  int         `json:"watchedEpisodes"`
-	TotalEpisodes    *int        `json:"totalEpisodes"`
-	Score            *int        `json:"score"`
-	UpdatedAt        *string     `json:"updatedAt"`
-	StartSeason      *SeasonInfo `json:"startSeason"`
+	MalID           int         `json:"malId"`
+	Title           string      `json:"title"`
+	URL             string      `json:"url"`
+	CoverImage      *string     `json:"coverImage"`
+	MediaType       *string     `json:"mediaType"`
+	WatchedEpisodes int         `json:"watchedEpisodes"`
+	TotalEpisodes   *int        `json:"totalEpisodes"`
+	Score           *int        `json:"score"`
+	UpdatedAt       *string     `json:"updatedAt"`
+	StartSeason     *SeasonInfo `json:"startSeason"`
 }
 
 type SeasonInfo struct {
@@ -64,11 +68,110 @@ type handler struct {
 }
 
 func (h *handler) seoPage(c *gin.Context) {
-	c.Redirect(http.StatusTemporaryRedirect, h.cfg.FrontendURL+"/anime")
+	if !seo.IsCrawler(c.GetHeader("User-Agent")) {
+		c.Redirect(http.StatusTemporaryRedirect, h.cfg.FrontendURL+"/anime")
+		return
+	}
+
+	state := h.previewState()
+	width, height := animeDimensions(state)
+	version := state.FetchedAt
+	if version == "" {
+		version = seo.VersionHash("anime-render-v1", state.Message, state.ErrorCode)
+	}
+	description := "A live currently-watching anime page synced from MyAnimeList."
+	if len(state.Items) == 0 && state.Message == "" {
+		description = "No anime are marked as currently watching right now."
+	} else if state.Message != "" {
+		description = "The MyAnimeList feed is unavailable right now."
+	}
+	seo.RenderShareHTML(c, h.cfg.WebsiteBase, seo.SharePage{
+		Title:       "Mirabellier Currently Watching Anime",
+		Description: description,
+		Path:        "/anime",
+		ImagePath:   "/anime/currently-watching/embed-image.png?v=" + version,
+		ImageWidth:  width,
+		ImageHeight: height,
+		ImageAlt:    "A preview image of the my currently watching anime section on Mirabellier.",
+	})
 }
 
 func (h *handler) embedImage(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "not implemented"})
+	state := h.previewState()
+	png, _, err := embed.RenderAnimeEmbed(state)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to render anime preview image")
+		return
+	}
+	c.Header("Content-Type", "image/png")
+	c.Header("Content-Length", strconv.Itoa(len(png)))
+	seo.SetEmbedImageCacheHeaders(c)
+	c.Data(http.StatusOK, "image/png", png)
+}
+
+func (h *handler) previewState() embed.AnimePreview {
+	if h.cfg.MALClientID == "" || h.cfg.MALUsername == "" {
+		return embed.AnimePreview{
+			Username:  h.cfg.MALUsername,
+			Message:   "The live anime sync is not configured yet.",
+			ErrorCode: ErrMALConfigMissing,
+		}
+	}
+
+	feedKey := "currently-watching"
+	payload := getCachedPayload(h.db, feedKey)
+	if payload == nil || !isCacheFresh(h.db, feedKey, h.cfg.MALAnimeRefreshMinutes) {
+		if fresh, err := fetchFromMAL(h.cfg); err == nil {
+			saveSnapshot(h.db, feedKey, fresh)
+			payload = fresh
+		} else if payload != nil {
+			payload.Stale = true
+		} else {
+			return embed.AnimePreview{
+				Username:  h.cfg.MALUsername,
+				Message:   "The MyAnimeList feed is unavailable right now.",
+				ErrorCode: ErrMALUnavailable,
+			}
+		}
+	}
+
+	preview := embed.AnimePreview{
+		Username:  payload.Username,
+		FetchedAt: payload.FetchedAt,
+		Stale:     payload.Stale,
+		Items:     make([]embed.AnimeItem, 0, len(payload.Items)),
+	}
+	for _, item := range payload.Items {
+		out := embed.AnimeItem{
+			Title:           item.Title,
+			WatchedEpisodes: item.WatchedEpisodes,
+		}
+		if item.CoverImage != nil {
+			out.CoverImage = *item.CoverImage
+		}
+		if item.MediaType != nil {
+			out.MediaType = *item.MediaType
+		}
+		if item.TotalEpisodes != nil {
+			out.TotalEpisodes = *item.TotalEpisodes
+		}
+		if item.Score != nil {
+			out.Score = *item.Score
+		}
+		if item.UpdatedAt != nil {
+			out.UpdatedAt = *item.UpdatedAt
+		}
+		if item.StartSeason != nil {
+			out.Season = item.StartSeason.Season
+			out.SeasonYear = item.StartSeason.Year
+		}
+		preview.Items = append(preview.Items, out)
+	}
+	return preview
+}
+
+func animeDimensions(state embed.AnimePreview) (int, int) {
+	return embed.AnimePreviewDimensions(state)
 }
 
 func (h *handler) getCurrentlyWatching(c *gin.Context) {
@@ -155,11 +258,11 @@ func fetchFromMAL(cfg *Config) (*AnimeFeedPayload, error) {
 	var raw struct {
 		Data []struct {
 			Node struct {
-				ID                int    `json:"id"`
-				Title             string `json:"title"`
-				NumEpisodes       int    `json:"num_episodes"`
-				MediaType         string `json:"media_type"`
-				MainPicture       *struct {
+				ID          int    `json:"id"`
+				Title       string `json:"title"`
+				NumEpisodes int    `json:"num_episodes"`
+				MediaType   string `json:"media_type"`
+				MainPicture *struct {
 					Large  string `json:"large"`
 					Medium string `json:"medium"`
 				} `json:"main_picture"`

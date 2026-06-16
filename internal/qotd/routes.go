@@ -11,6 +11,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirabellier/mirabellier-backend-go/internal/auth"
+	"github.com/mirabellier/mirabellier-backend-go/internal/embed"
+	"github.com/mirabellier/mirabellier-backend-go/internal/seo"
 )
 
 // Config is the subset needed by QOTD package.
@@ -19,6 +21,8 @@ type Config struct {
 	QOTDDiscordWebhookUsername  string
 	QOTDDiscordWebhookAvatarURL string
 	OwnerDiscordIDs             []string
+	FrontendURL                 string
+	WebsiteBase                 string
 }
 
 func RegisterRoutes(r *gin.RouterGroup, db *sql.DB, cfg *Config) {
@@ -43,19 +47,74 @@ type handler struct {
 }
 
 func (h *handler) isOwner(user *auth.User) bool {
-	if user == nil || user.DiscordID == nil { return false }
+	if user == nil || user.DiscordID == nil {
+		return false
+	}
 	for _, id := range h.cfg.OwnerDiscordIDs {
-		if *user.DiscordID == id { return true }
+		if *user.DiscordID == id {
+			return true
+		}
 	}
 	return false
 }
 
 func (h *handler) seoPage(c *gin.Context) {
-	c.Redirect(http.StatusTemporaryRedirect, "/")
+	if !seo.IsCrawler(c.GetHeader("User-Agent")) {
+		redirectBase := strings.TrimRight(h.cfg.FrontendURL, "/")
+		if redirectBase == "" {
+			redirectBase = seo.WebsiteBase(h.cfg.WebsiteBase)
+		}
+		c.Redirect(http.StatusTemporaryRedirect, redirectBase+"/question-of-the-day")
+		return
+	}
+
+	state := h.previewState()
+	description := "There is no live question on Mirabellier right now."
+	if state.prompt != "" {
+		description = "Today's public question on Mirabellier."
+	}
+	version := seo.VersionHash("qotd-render-v5", state.currentDate, state.recordedDate, state.updatedAt, state.prompt)
+	seo.RenderShareHTML(c, h.cfg.WebsiteBase, seo.SharePage{
+		Title:       "Question of the Day",
+		Description: description,
+		Path:        "/question-of-the-day",
+		ImagePath:   "/question-of-the-day/embed-image.png?v=" + version,
+		ImageWidth:  embed.PreviewWidth,
+		ImageHeight: embed.PreviewHeight,
+		ImageAlt:    "A preview image of Mirabellier's question of the day page.",
+	})
 }
 
 func (h *handler) embedImage(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{"error": "not implemented"})
+	state := h.previewState()
+	png, err := embed.RenderQOTDEmbed(state.prompt)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to render question preview image")
+		return
+	}
+	c.Header("Content-Type", "image/png")
+	c.Header("Content-Length", strconv.Itoa(len(png)))
+	seo.SetEmbedImageCacheHeaders(c)
+	c.Data(http.StatusOK, "image/png", png)
+}
+
+type qotdPreviewState struct {
+	currentDate  string
+	recordedDate string
+	prompt       string
+	updatedAt    string
+}
+
+func (h *handler) previewState() qotdPreviewState {
+	currentDate := time.Now().UTC().Format("2006-01-02")
+	activeDate := getActiveRecordedDate(h.db)
+	state := qotdPreviewState{currentDate: currentDate, recordedDate: activeDate}
+	_ = h.db.QueryRow(`
+		SELECT recordedDate, prompt, updatedAt
+		FROM daily_questions
+		WHERE recordedDate = ? AND archivedAt IS NULL
+	`, activeDate).Scan(&state.recordedDate, &state.prompt, &state.updatedAt)
+	return state
 }
 
 func getActiveRecordedDate(db *sql.DB) string {
@@ -146,18 +205,24 @@ func (h *handler) getCurrent(c *gin.Context) {
 		a.ID = id
 		a.Answer = answerText
 		a.CreatedAt = createdAt
-		if guestName.Valid { a.GuestName = &guestName.String }
+		if guestName.Valid {
+			a.GuestName = &guestName.String
+		}
 		if userID.Valid && username.Valid {
 			a.User = &struct {
 				ID       string  `json:"id,omitempty"`
 				Username string  `json:"username,omitempty"`
 				Avatar   *string `json:"avatar,omitempty"`
 			}{ID: userID.String, Username: username.String}
-			if avatar.Valid { a.User.Avatar = &avatar.String }
+			if avatar.Valid {
+				a.User.Avatar = &avatar.String
+			}
 		}
 		answers = append(answers, a)
 	}
-	if answers == nil { answers = []Answer{} }
+	if answers == nil {
+		answers = []Answer{}
+	}
 
 	// Viewer state
 	hasAnswered := false
@@ -180,8 +245,16 @@ func (h *handler) getCurrent(c *gin.Context) {
 		"createdAt":    questionCreatedAt,
 		"updatedAt":    questionUpdatedAt,
 	}
-	if lockedAt.Valid { q["lockedAt"] = lockedAt.String } else { q["lockedAt"] = nil }
-	if archivedAt.Valid { q["archivedAt"] = archivedAt.String } else { q["archivedAt"] = nil }
+	if lockedAt.Valid {
+		q["lockedAt"] = lockedAt.String
+	} else {
+		q["lockedAt"] = nil
+	}
+	if archivedAt.Valid {
+		q["archivedAt"] = archivedAt.String
+	} else {
+		q["archivedAt"] = nil
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"currentRecordedDate": activeDate,
@@ -247,8 +320,16 @@ func (h *handler) setCurrentPrompt(c *gin.Context) {
 		"recordedDate": today, "prompt": qPrompt, "createdAt": ca, "updatedAt": ua,
 		"answerCount": 0, "isCurrent": true,
 	}
-	if la.Valid { q["lockedAt"] = la.String } else { q["lockedAt"] = nil }
-	if aa.Valid { q["archivedAt"] = aa.String } else { q["archivedAt"] = nil }
+	if la.Valid {
+		q["lockedAt"] = la.String
+	} else {
+		q["lockedAt"] = nil
+	}
+	if aa.Valid {
+		q["archivedAt"] = aa.String
+	} else {
+		q["archivedAt"] = nil
+	}
 
 	c.JSON(http.StatusOK, map[string]any{"question": q})
 }
@@ -378,11 +459,21 @@ func (h *handler) adminQueue(c *gin.Context) {
 			"answerCount":  answerCount,
 			"isCurrent":    recordedDate == startDate,
 		}
-		if lockedAt.Valid { q["lockedAt"] = lockedAt.String } else { q["lockedAt"] = nil }
-		if archivedAt.Valid { q["archivedAt"] = archivedAt.String } else { q["archivedAt"] = nil }
+		if lockedAt.Valid {
+			q["lockedAt"] = lockedAt.String
+		} else {
+			q["lockedAt"] = nil
+		}
+		if archivedAt.Valid {
+			q["archivedAt"] = archivedAt.String
+		} else {
+			q["archivedAt"] = nil
+		}
 		questions = append(questions, q)
 	}
-	if questions == nil { questions = []map[string]any{} }
+	if questions == nil {
+		questions = []map[string]any{}
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"currentRecordedDate": today,
@@ -464,12 +555,22 @@ func (h *handler) queuePrompts(c *gin.Context) {
 			Scan(&prompt, &la, &aa, &ca, &ua)
 		if err == nil {
 			q := map[string]any{"recordedDate": d, "prompt": prompt, "createdAt": ca, "updatedAt": ua, "answerCount": 0, "isCurrent": d == today}
-			if la.Valid { q["lockedAt"] = la.String } else { q["lockedAt"] = nil }
-			if aa.Valid { q["archivedAt"] = aa.String } else { q["archivedAt"] = nil }
+			if la.Valid {
+				q["lockedAt"] = la.String
+			} else {
+				q["lockedAt"] = nil
+			}
+			if aa.Valid {
+				q["archivedAt"] = aa.String
+			} else {
+				q["archivedAt"] = nil
+			}
 			addedQuestions = append(addedQuestions, q)
 		}
 	}
-	if addedQuestions == nil { addedQuestions = []map[string]any{} }
+	if addedQuestions == nil {
+		addedQuestions = []map[string]any{}
+	}
 
 	// Load all admin questions for response
 	allRows, _ := h.db.Query(`
@@ -490,12 +591,22 @@ func (h *handler) queuePrompts(c *gin.Context) {
 			var ac int
 			allRows.Scan(&rd, &p, &la, &aa, &ca, &ua, &ac)
 			q := map[string]any{"recordedDate": rd, "prompt": p, "createdAt": ca, "updatedAt": ua, "answerCount": ac, "isCurrent": rd == today}
-			if la.Valid { q["lockedAt"] = la.String } else { q["lockedAt"] = nil }
-			if aa.Valid { q["archivedAt"] = aa.String } else { q["archivedAt"] = nil }
+			if la.Valid {
+				q["lockedAt"] = la.String
+			} else {
+				q["lockedAt"] = nil
+			}
+			if aa.Valid {
+				q["archivedAt"] = aa.String
+			} else {
+				q["archivedAt"] = nil
+			}
 			allQuestions = append(allQuestions, q)
 		}
 	}
-	if allQuestions == nil { allQuestions = []map[string]any{} }
+	if allQuestions == nil {
+		allQuestions = []map[string]any{}
+	}
 
 	c.JSON(http.StatusCreated, gin.H{
 		"currentRecordedDate": today,
@@ -548,8 +659,16 @@ func (h *handler) forceArchive(c *gin.Context) {
 	}
 
 	q := map[string]any{"recordedDate": recordedDate, "prompt": prompt, "createdAt": createdAt, "updatedAt": updatedAt, "answerCount": 0, "isCurrent": false}
-	if la.Valid { q["lockedAt"] = la.String } else { q["lockedAt"] = nil }
-	if aa.Valid { q["archivedAt"] = aa.String } else { q["archivedAt"] = nil }
+	if la.Valid {
+		q["lockedAt"] = la.String
+	} else {
+		q["lockedAt"] = nil
+	}
+	if aa.Valid {
+		q["archivedAt"] = aa.String
+	} else {
+		q["archivedAt"] = nil
+	}
 
 	c.JSON(http.StatusOK, map[string]any{"archivedQuestion": q})
 }
@@ -586,7 +705,9 @@ func (h *handler) archive(c *gin.Context) {
 			"updatedAt":    ua,
 		})
 	}
-	if entries == nil { entries = []map[string]any{} }
+	if entries == nil {
+		entries = []map[string]any{}
+	}
 
 	c.JSON(http.StatusOK, entries)
 }
@@ -625,20 +746,36 @@ func (h *handler) archiveDay(c *gin.Context) {
 		var avatar sql.NullString
 		rows.Scan(&id, &userID, &guestName, &identityType, &identityKey, &ans, &createdAt, &username, &avatar)
 		a := map[string]any{"id": id, "recordedDate": recordedDate, "answer": ans, "createdAt": createdAt}
-		if guestName.Valid { a["guestName"] = guestName.String }
+		if guestName.Valid {
+			a["guestName"] = guestName.String
+		}
 		if username.Valid {
 			uo := map[string]any{"username": username.String}
-			if userID.Valid { uo["id"] = userID.String }
-			if avatar.Valid { uo["avatar"] = avatar.String }
+			if userID.Valid {
+				uo["id"] = userID.String
+			}
+			if avatar.Valid {
+				uo["avatar"] = avatar.String
+			}
 			a["user"] = uo
 		}
 		answers = append(answers, a)
 	}
-	if answers == nil { answers = []map[string]any{} }
+	if answers == nil {
+		answers = []map[string]any{}
+	}
 
 	q := map[string]any{"recordedDate": recordedDate, "prompt": prompt, "createdAt": ca, "updatedAt": ua}
-	if lockedAt.Valid { q["lockedAt"] = lockedAt.String } else { q["lockedAt"] = nil }
-	if archivedAt.Valid { q["archivedAt"] = archivedAt.String } else { q["archivedAt"] = nil }
+	if lockedAt.Valid {
+		q["lockedAt"] = lockedAt.String
+	} else {
+		q["lockedAt"] = nil
+	}
+	if archivedAt.Valid {
+		q["archivedAt"] = archivedAt.String
+	} else {
+		q["archivedAt"] = nil
+	}
 
 	c.JSON(http.StatusOK, map[string]any{
 		"recordedDate": recordedDate,

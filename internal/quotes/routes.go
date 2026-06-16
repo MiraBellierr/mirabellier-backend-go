@@ -6,12 +6,14 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirabellier/mirabellier-backend-go/internal/config"
+	"github.com/mirabellier/mirabellier-backend-go/internal/embed"
+	"github.com/mirabellier/mirabellier-backend-go/internal/seo"
 )
-
 
 func RegisterRoutes(r *gin.RouterGroup, db *sql.DB, cfg *config.Config) {
 	h := &handler{db: db, cfg: cfg}
@@ -27,11 +29,89 @@ type handler struct {
 }
 
 func (h *handler) seoPage(c *gin.Context) {
-	c.Redirect(http.StatusTemporaryRedirect, h.cfg.FrontendURL+"/quotes")
+	if !seo.IsCrawler(c.GetHeader("User-Agent")) {
+		c.Redirect(http.StatusTemporaryRedirect, h.cfg.FrontendURL+"/quotes")
+		return
+	}
+
+	state := h.previewState()
+	width, height := embed.QuotesPreviewDimensions(state.quotes, state.stale, state.message)
+	version := state.fetchedAt
+	if version == "" {
+		version = state.recordedDate
+	}
+	if version == "" {
+		version = seo.VersionHash("quotes-render-v1", state.message)
+	}
+	description := "Daily quotes across love, art, nature, humor, and more."
+	if len(state.quotes) == 0 && state.message == "" {
+		description = "No daily quotes are available right now."
+	} else if state.message != "" {
+		description = "The daily quote preview is temporarily unavailable."
+	}
+
+	seo.RenderShareHTML(c, h.cfg.WebsiteBase, seo.SharePage{
+		Title:       "Quotes of the Day",
+		Description: description,
+		Path:        "/quotes",
+		ImagePath:   "/quotes/embed-image.png?v=" + version,
+		ImageWidth:  width,
+		ImageHeight: height,
+		ImageAlt:    "A preview image of the daily quotes on Mirabellier.",
+	})
 }
 
 func (h *handler) embedImage(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "not implemented"})
+	state := h.previewState()
+	png, _, err := embed.RenderQuotesEmbed(state.quotes, state.stale, state.fetchedAt, state.message)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to render quote preview image")
+		return
+	}
+	c.Header("Content-Type", "image/png")
+	c.Header("Content-Length", strconv.Itoa(len(png)))
+	seo.SetEmbedImageCacheHeaders(c)
+	c.Data(http.StatusOK, "image/png", png)
+}
+
+type quotesPreviewState struct {
+	recordedDate string
+	fetchedAt    string
+	stale        bool
+	message      string
+	quotes       []map[string]any
+}
+
+func (h *handler) previewState() quotesPreviewState {
+	snapshot, err := ensureTodaysQuote(h.db)
+	state := quotesPreviewState{}
+	if err != nil {
+		snapshot = getLatestQuoteSnapshot(h.db)
+		if snapshot == nil {
+			state.message = err.Error()
+			return state
+		}
+		state.stale = true
+		state.message = ""
+	} else if snapshot == nil {
+		snapshot = getLatestQuoteSnapshot(h.db)
+	}
+	if snapshot == nil {
+		return state
+	}
+	if recordedDate, ok := snapshot["recordedDate"].(string); ok {
+		state.recordedDate = recordedDate
+	}
+	if fetchedAt, ok := snapshot["fetchedAt"].(string); ok {
+		state.fetchedAt = fetchedAt
+	}
+	if quotes, ok := snapshot["quotes"].([]map[string]any); ok {
+		state.quotes = quotes
+	}
+	if stale, ok := snapshot["stale"].(bool); ok {
+		state.stale = stale
+	}
+	return state
 }
 
 var datePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
@@ -108,9 +188,15 @@ func getQuoteSnapshot(db *sql.DB, recordedDate string) map[string]any {
 		"fetchedAt":    fetchedAt,
 		"quotes":       quotes,
 	}
-	if displayDate.Valid { resp["displayDate"] = displayDate.String }
-	if publishedAt.Valid { resp["publishedAt"] = publishedAt.String }
-	if fallbackReason.Valid { resp["fallbackReason"] = fallbackReason.String }
+	if displayDate.Valid {
+		resp["displayDate"] = displayDate.String
+	}
+	if publishedAt.Valid {
+		resp["publishedAt"] = publishedAt.String
+	}
+	if fallbackReason.Valid {
+		resp["fallbackReason"] = fallbackReason.String
+	}
 	return resp
 }
 
@@ -138,9 +224,15 @@ func getLatestQuoteSnapshot(db *sql.DB) map[string]any {
 		"fetchedAt":    fetchedAt,
 		"quotes":       quotes,
 	}
-	if displayDate.Valid { resp["displayDate"] = displayDate.String }
-	if publishedAt.Valid { resp["publishedAt"] = publishedAt.String }
-	if fallbackReason.Valid { resp["fallbackReason"] = fallbackReason.String }
+	if displayDate.Valid {
+		resp["displayDate"] = displayDate.String
+	}
+	if publishedAt.Valid {
+		resp["publishedAt"] = publishedAt.String
+	}
+	if fallbackReason.Valid {
+		resp["fallbackReason"] = fallbackReason.String
+	}
 	return resp
 }
 

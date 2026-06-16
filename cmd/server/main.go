@@ -146,6 +146,8 @@ func qotdConfig(cfg *config.Config) *qotd.Config {
 		QOTDDiscordWebhookUsername:  cfg.QOTDDiscordWebhookUsername,
 		QOTDDiscordWebhookAvatarURL: cfg.QOTDDiscordWebhookAvatarURL,
 		OwnerDiscordIDs:             cfg.OwnerDiscordIDs,
+		FrontendURL:                 cfg.FrontendURL,
+		WebsiteBase:                 cfg.WebsiteBase,
 	}
 }
 
@@ -155,5 +157,6 @@ func animeConfig(cfg *config.Config) *anime.Config {
 		MALUsername:            cfg.MALUsername,
 		MALAnimeRefreshMinutes: cfg.MALAnimeRefreshMinutes,
 		FrontendURL:            cfg.FrontendURL,
+		WebsiteBase:            cfg.WebsiteBase,
 	}
 }

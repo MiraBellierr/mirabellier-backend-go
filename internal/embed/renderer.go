@@ -1,178 +1,620 @@
 package embed
 
 import (
+	"bytes"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
+	_ "image/gif"
+	_ "image/jpeg"
 	"image/png"
 	"io"
+	"net/http"
+	"strings"
+	"time"
 
+	"github.com/disintegration/imaging"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
 	"golang.org/x/image/math/fixed"
 )
 
-// RGBA is a simple canvas for rendering embed images.
+const (
+	PreviewWidth  = 1200
+	PreviewHeight = 630
+)
+
+type AnimeItem struct {
+	Title           string
+	CoverImage      string
+	MediaType       string
+	WatchedEpisodes int
+	TotalEpisodes   int
+	Score           int
+	UpdatedAt       string
+	Season          string
+	SeasonYear      int
+}
+
+type AnimePreview struct {
+	Username  string
+	FetchedAt string
+	Stale     bool
+	Items     []AnimeItem
+	Message   string
+	ErrorCode string
+}
+
+type BlogPreview struct {
+	Title       string
+	Description string
+	Author      string
+	PublishedAt string
+	UpdatedAt   string
+	Thumbnail   string
+	Tags        []string
+}
+
 type RGBA struct {
 	img *image.RGBA
 }
 
-// NewRGBA creates a new canvas of the given dimensions, filled with bg.
 func NewRGBA(width, height int, bg color.Color) *RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(img, img.Bounds(), &image.Uniform{bg}, image.Point{}, draw.Src)
 	return &RGBA{img: img}
 }
 
-// DrawImage draws an image at position.
-func (c *RGBA) DrawImage(src image.Image, x, y int) {
-	draw.Draw(c.img,
-		image.Rect(x, y, x+src.Bounds().Dx(), y+src.Bounds().Dy()),
-		src, image.Point{}, draw.Over)
-}
-
-// FillRect draws a filled rectangle.
 func (c *RGBA) FillRect(x, y, w, h int, clr color.Color) {
 	draw.Draw(c.img, image.Rect(x, y, x+w, y+h), &image.Uniform{clr}, image.Point{}, draw.Src)
 }
 
-// DrawText draws text using the basic font face.
-func (c *RGBA) DrawText(text string, x, y int, clr color.Color) {
-	face := basicfont.Face7x13
-	drawer := &font.Drawer{
-		Dst:  c.img,
-		Src:  image.NewUniform(clr),
-		Face: face,
-		Dot:  fixed.P(x, y),
+func (c *RGBA) FillBorderedRect(x, y, w, h, border int, fill, stroke color.Color) {
+	c.FillRect(x, y, w, h, stroke)
+	c.FillRect(x+border, y+border, w-border*2, h-border*2, fill)
+}
+
+func (c *RGBA) DrawText(text string, x, y, size int, clr color.Color) {
+	drawScaledText(c.img, text, x, y, size, clr)
+}
+
+func (c *RGBA) DrawTextCentered(text string, cx, y, size int, clr color.Color) {
+	w := textWidth(text, size)
+	c.DrawText(text, cx-w/2, y, size, clr)
+}
+
+func (c *RGBA) DrawTextRight(text string, right, y, size int, clr color.Color) {
+	c.DrawText(text, right-textWidth(text, size), y, size, clr)
+}
+
+func (c *RGBA) DrawImage(src image.Image, x, y, w, h int) {
+	if src == nil {
+		return
 	}
-	drawer.DrawString(text)
+	resized := imaging.Fill(src, w, h, imaging.Center, imaging.Lanczos)
+	draw.Draw(c.img, image.Rect(x, y, x+w, y+h), resized, image.Point{}, draw.Over)
 }
 
-// DrawTextCentered draws text horizontally centered at (cx, y).
-func (c *RGBA) DrawTextCentered(text string, cx, y int, clr color.Color) {
-	face := basicfont.Face7x13
-	w := font.MeasureString(face, text).Ceil()
-	c.DrawText(text, cx-w/2, y, clr)
-}
-
-// EncodePNG writes the canvas as PNG to the writer.
 func (c *RGBA) EncodePNG(w io.Writer) error {
 	return png.Encode(w, c.img)
 }
 
-// Bounds returns the image bounds.
-func (c *RGBA) Bounds() image.Rectangle {
-	return c.img.Bounds()
-}
-
-// RenderProfileEmbed generates a 1200x630 profile card PNG.
 func RenderProfileEmbed(username string, avatarURL, bio *string) ([]byte, error) {
-	canvas := NewRGBA(1200, 630, color.RGBA{30, 30, 40, 255})
-
-	// Header bar
-	canvas.FillRect(0, 0, 1200, 80, color.RGBA{60, 60, 120, 255})
-	canvas.DrawTextCentered("mirabellier.com", 600, 50, color.White)
-
-	// Username
-	canvas.DrawTextCentered(username, 600, 300, color.White)
-
-	// Bio
+	canvas := NewRGBA(PreviewWidth, PreviewHeight, color.RGBA{248, 251, 255, 255})
+	canvas.FillBorderedRect(96, 96, 1008, 438, 5, color.RGBA{255, 255, 255, 235}, color.RGBA{96, 165, 250, 255})
+	canvas.DrawTextCentered("mirabellier.com", 600, 178, 24, color.RGBA{96, 165, 250, 255})
+	canvas.DrawTextCentered(username, 600, 314, 56, color.RGBA{29, 78, 216, 255})
 	if bio != nil && *bio != "" {
-		canvas.DrawTextCentered(fmt.Sprintf("%.100s", *bio), 600, 400, color.RGBA{200, 200, 220, 255})
+		canvas.DrawTextCentered(limit(*bio, 96), 600, 392, 24, color.RGBA{71, 85, 105, 255})
 	}
-
 	return encodePNG(canvas)
 }
 
-// RenderAnimeEmbed generates an anime preview card PNG.
-func RenderAnimeEmbed(items []string) ([]byte, error) {
-	h := 200 + len(items)*60
-	if h < 400 {
-		h = 400
-	}
-	canvas := NewRGBA(1200, h, color.RGBA{20, 20, 35, 255})
-
-	canvas.FillRect(0, 0, 1200, 60, color.RGBA{50, 50, 100, 255})
-	canvas.DrawTextCentered("Currently Watching — MyAnimeList", 600, 42, color.White)
-
-	for i, item := range items {
-		y := 90 + i*55
-		canvas.DrawText(item, 40, y, color.RGBA{220, 220, 240, 255})
-	}
-
-	return encodePNG(canvas)
-}
-
-// RenderQOTDEmbed generates a 1200x630 QOTD preview card PNG.
 func RenderQOTDEmbed(prompt string) ([]byte, error) {
-	canvas := NewRGBA(1200, 630, color.RGBA{25, 25, 45, 255})
+	canvas := NewRGBA(PreviewWidth, PreviewHeight, color.RGBA{248, 251, 255, 255})
+	drawSoftBackground(canvas)
 
-	canvas.FillRect(0, 0, 1200, 80, color.RGBA{80, 50, 120, 255})
-	canvas.DrawTextCentered("Question of the Day", 600, 50, color.White)
-
-	// Wrap long prompts
-	if len(prompt) > 80 {
-		prompt = prompt[:80] + "..."
+	if strings.TrimSpace(prompt) == "" {
+		canvas.DrawTextCentered("No active question yet.", 600, 326, 44, color.RGBA{30, 58, 138, 255})
+		return encodePNG(canvas)
 	}
-	canvas.DrawTextCentered(prompt, 600, 350, color.White)
 
-	canvas.DrawTextCentered("Answer at mirabellier.com/question-of-the-day", 600, 500, color.RGBA{180, 180, 200, 255})
+	layout := chooseTextLayout(prompt, []textCandidate{
+		{28, 3, 62, 66}, {32, 4, 56, 60}, {36, 4, 50, 54}, {40, 5, 44, 48},
+		{46, 6, 38, 42}, {52, 7, 33, 37}, {58, 8, 29, 33}, {64, 9, 25, 29},
+	}, 360)
+	textHeight := layout.Size + max(0, len(layout.Lines)-1)*layout.LineHeight
+	y := PreviewHeight/2 - textHeight/2 + layout.Size
+	for _, line := range layout.Lines {
+		canvas.DrawTextCentered(line, PreviewWidth/2, y, layout.Size, color.RGBA{30, 58, 138, 255})
+		y += layout.LineHeight
+	}
 
 	return encodePNG(canvas)
 }
 
-// RenderQuotesEmbed generates a quotes preview card PNG.
-func RenderQuotesEmbed(quotes []map[string]any) ([]byte, error) {
-	canvas := NewRGBA(1200, 630, color.RGBA{20, 20, 40, 255})
+func RenderBlogEmbed(preview BlogPreview) ([]byte, error) {
+	canvas := NewRGBA(PreviewWidth, PreviewHeight, color.RGBA{248, 251, 255, 255})
+	drawBlueBackground(canvas, PreviewHeight)
 
-	canvas.FillRect(0, 0, 1200, 80, color.RGBA{100, 70, 40, 255})
-	canvas.DrawTextCentered("Quote of the Day", 600, 50, color.White)
+	cardX, cardY, cardW, cardH := 76, 76, 1048, 478
+	canvas.FillBorderedRect(cardX, cardY, cardW, cardH, 5, color.RGBA{255, 255, 255, 242}, color.RGBA{96, 165, 250, 255})
+	canvas.DrawText("mirabellier.com / blog", cardX+40, cardY+46, 18, color.RGBA{96, 165, 250, 255})
 
-	quoteCount := len(quotes)
-	lineHeight := 100
-	if quoteCount > 5 {
-		quoteCount = 5
-	}
-	if quoteCount > 3 {
-		lineHeight = 80
-	}
-
-	for i := 0; i < quoteCount; i++ {
-		y := 140 + i*lineHeight
-		quote, _ := quotes[i]["quote"].(string)
-		if len(quote) > 100 {
-			quote = quote[:100] + "..."
+	textW := 880
+	if preview.Thumbnail != "" {
+		textW = 650
+		if img := fetchImage(preview.Thumbnail); img != nil {
+			canvas.DrawImage(img, cardX+cardW-300, cardY+76, 238, 316)
+			canvas.FillBorderedRect(cardX+cardW-300, cardY+76, 238, 316, 3, color.RGBA{0, 0, 0, 0}, color.RGBA{147, 197, 253, 255})
+		} else {
+			canvas.FillBorderedRect(cardX+cardW-300, cardY+76, 238, 316, 3, color.RGBA{219, 234, 254, 255}, color.RGBA{147, 197, 253, 255})
+			canvas.DrawTextCentered("blog", cardX+cardW-181, cardY+220, 34, color.RGBA{29, 78, 216, 255})
+			canvas.DrawTextCentered("preview", cardX+cardW-181, cardY+262, 28, color.RGBA{59, 130, 246, 255})
 		}
-		canvas.DrawTextCentered(fmt.Sprintf("\"%s\"", quote), 600, y, color.White)
+	}
 
-		author, _ := quotes[i]["author"].(string)
-		if author != "" {
-			canvas.DrawTextCentered(fmt.Sprintf("— %s", author), 600, y+20, color.RGBA{180, 180, 200, 255})
-		}
+	title := strings.TrimSpace(preview.Title)
+	if title == "" {
+		title = "Untitled blog post"
+	}
+	titleChars := 34
+	if textW > 700 {
+		titleChars = 46
+	}
+	titleLines := wrapText(title, titleChars, 3)
+	y := cardY + 118
+	for _, line := range titleLines {
+		canvas.DrawText(line, cardX+40, y, 38, color.RGBA{29, 78, 216, 255})
+		y += 44
+	}
+
+	desc := strings.TrimSpace(preview.Description)
+	if desc == "" {
+		desc = "A post from Mirabellier."
+	}
+	descChars := 56
+	if textW > 700 {
+		descChars = 72
+	}
+	for _, line := range wrapText(desc, descChars, 4) {
+		canvas.DrawText(line, cardX+42, y+22, 22, color.RGBA{51, 65, 85, 255})
+		y += 28
+	}
+
+	meta := "By " + strings.TrimSpace(preview.Author)
+	if strings.TrimSpace(preview.Author) == "" {
+		meta = "By Mirabellier"
+	}
+	if t := formatDate(preview.PublishedAt); t != "" {
+		meta += " - " + t
+	}
+	canvas.DrawText(meta, cardX+42, cardY+cardH-74, 20, color.RGBA{37, 99, 235, 255})
+
+	if len(preview.Tags) > 0 {
+		tagLine := "# " + strings.Join(preview.Tags, "  # ")
+		canvas.DrawText(limit(tagLine, 80), cardX+42, cardY+cardH-36, 18, color.RGBA{100, 116, 139, 255})
 	}
 
 	return encodePNG(canvas)
+}
+
+func RenderQuotesEmbed(quotes []map[string]any, stale bool, fetchedAt, message string) ([]byte, int, error) {
+	normalized := normalizeQuotes(quotes)
+	variant := "list"
+	if len(normalized) == 0 {
+		if strings.TrimSpace(message) != "" {
+			variant = "fallback"
+		} else {
+			variant = "empty"
+		}
+	}
+
+	height := quotesHeight(len(normalized), stale, variant)
+	canvas := NewRGBA(PreviewWidth, height, color.RGBA{234, 244, 255, 255})
+	drawBlueBackground(canvas, height)
+
+	cardX, cardY, cardW := 78, 84, 1044
+	cardH := height - cardY - 50
+	canvas.FillBorderedRect(cardX, cardY, cardW, cardH, 3, color.RGBA{255, 255, 255, 235}, color.RGBA{147, 197, 253, 255})
+	canvas.DrawText("Quote of the day", cardX+34, cardY+54, 34, color.RGBA{29, 78, 216, 255})
+	canvas.DrawText("mirabellier.com / quotes", cardX+34, cardY+90, 18, color.RGBA{96, 165, 250, 255})
+
+	y := cardY + 132
+	if stale {
+		canvas.FillBorderedRect(cardX+34, y, cardW-68, 64, 2, color.RGBA{255, 251, 235, 255}, color.RGBA{245, 158, 11, 255})
+		canvas.DrawText("Showing the last successful snapshot from "+formatTime(fetchedAt)+".", cardX+54, y+40, 18, color.RGBA{180, 83, 9, 255})
+		y += 86
+	}
+
+	switch variant {
+	case "empty":
+		canvas.DrawText("No daily quotes are available right now.", cardX+34, y+72, 34, color.RGBA{29, 78, 216, 255})
+		canvas.DrawText("The next quote snapshot will appear here once it is ready.", cardX+34, y+124, 22, color.RGBA{71, 85, 105, 255})
+	case "fallback":
+		canvas.DrawText("Quote preview status", cardX+34, y+48, 30, color.RGBA{29, 78, 216, 255})
+		for _, line := range wrapText(message, 62, 4) {
+			canvas.DrawText(line, cardX+34, y+98, 28, color.RGBA{51, 65, 85, 255})
+			y += 34
+		}
+		canvas.DrawText("The page will share cleanly again after the next quote snapshot.", cardX+34, y+148, 22, color.RGBA{71, 85, 105, 255})
+	default:
+		for i, entry := range normalized {
+			sectionY := y
+			label := entry.Category
+			if i == 0 {
+				label = "Featured quote"
+			}
+			canvas.DrawText(label, cardX+34, sectionY+28, 24, color.RGBA{29, 78, 216, 255})
+			lines := wrapText("\""+entry.Quote+"\"", 76, 5)
+			lineY := sectionY + 70
+			for _, line := range lines {
+				canvas.DrawText(line, cardX+52, lineY, 21, color.RGBA{51, 65, 85, 255})
+				lineY += 28
+			}
+			canvas.DrawText("-- "+entry.Author, cardX+52, lineY+16, 20, color.RGBA{37, 99, 235, 255})
+			y = lineY + 60
+		}
+	}
+
+	png, err := encodePNG(canvas)
+	return png, height, err
+}
+
+func QuotesPreviewDimensions(quotes []map[string]any, stale bool, message string) (int, int) {
+	normalized := normalizeQuotes(quotes)
+	variant := "list"
+	if len(normalized) == 0 {
+		if strings.TrimSpace(message) != "" {
+			variant = "fallback"
+		} else {
+			variant = "empty"
+		}
+	}
+	return PreviewWidth, quotesHeight(len(normalized), stale, variant)
+}
+
+func RenderAnimeEmbed(preview AnimePreview) ([]byte, int, error) {
+	variant := "list"
+	if len(preview.Items) == 0 {
+		if strings.TrimSpace(preview.Message) != "" || strings.TrimSpace(preview.ErrorCode) != "" {
+			variant = "fallback"
+		} else {
+			variant = "empty"
+		}
+	}
+
+	height := animeHeight(len(preview.Items), preview.Stale, variant)
+	canvas := NewRGBA(PreviewWidth, height, color.RGBA{248, 251, 255, 255})
+	drawBlueBackground(canvas, height)
+
+	cardX, cardY, cardW := 84, 56, 1032
+	canvas.FillBorderedRect(cardX, cardY, cardW, height-cardY*2, 7, color.RGBA{255, 255, 255, 242}, color.RGBA{96, 165, 250, 255})
+	canvas.DrawText("mirabellier.com / anime", cardX+42, cardY+42, 18, color.RGBA{96, 165, 250, 255})
+	canvas.DrawText("my currently watching anime !!!", cardX+42, cardY+96, 40, color.RGBA{29, 78, 216, 255})
+
+	y := cardY + 160
+	if preview.Stale {
+		canvas.FillBorderedRect(cardX+42, y, cardW-84, 66, 2, color.RGBA{255, 251, 235, 255}, color.RGBA{245, 158, 11, 255})
+		canvas.DrawText("MyAnimeList did not answer on the latest refresh.", cardX+66, y+30, 20, color.RGBA{180, 83, 9, 255})
+		canvas.DrawText("Showing the last successful snapshot from "+formatTime(preview.FetchedAt)+".", cardX+66, y+54, 18, color.RGBA{146, 64, 14, 255})
+		y += 88
+	}
+
+	switch variant {
+	case "empty":
+		canvas.FillBorderedRect(cardX+144, y+42, cardW-288, 160, 3, color.RGBA{255, 255, 255, 240}, color.RGBA{191, 219, 254, 255})
+		canvas.DrawTextCentered("Nothing is marked as currently watching right now.", PreviewWidth/2, y+120, 30, color.RGBA{29, 78, 216, 255})
+		canvas.DrawTextCentered("The page is live and ready whenever the next anime gets added.", PreviewWidth/2, y+164, 22, color.RGBA{71, 85, 105, 255})
+	case "fallback":
+		msg := preview.Message
+		if msg == "" {
+			msg = "The MyAnimeList feed is unavailable right now."
+		}
+		for _, line := range wrapText(msg, 38, 2) {
+			canvas.DrawText(line, cardX+42, y+18, 34, color.RGBA{30, 64, 175, 255})
+			y += 38
+		}
+		canvas.DrawText("The page still shares cleanly.", cardX+70, y+96, 24, color.RGBA{51, 65, 85, 255})
+		canvas.FillBorderedRect(cardX+cardW-382, cardY+140, 320, 390, 3, color.RGBA{219, 234, 254, 255}, color.RGBA{147, 197, 253, 255})
+		canvas.DrawTextCentered("anime preview", cardX+cardW-222, cardY+332, 28, color.RGBA{29, 78, 216, 255})
+	default:
+		for i, item := range preview.Items {
+			rowY := y + i*176
+			canvas.FillRect(cardX+32, rowY, cardW-64, 146, color.RGBA{255, 255, 255, 235})
+			if img := fetchImage(item.CoverImage); img != nil {
+				canvas.DrawImage(img, cardX+42, rowY+12, 90, 126)
+			} else {
+				canvas.FillBorderedRect(cardX+42, rowY+12, 90, 126, 2, color.RGBA{239, 246, 255, 255}, color.RGBA{191, 219, 254, 255})
+				canvas.DrawTextCentered("NO", cardX+87, rowY+60, 14, color.RGBA{96, 165, 250, 255})
+				canvas.DrawTextCentered("ART", cardX+87, rowY+82, 14, color.RGBA{96, 165, 250, 255})
+			}
+			textX := cardX + 158
+			titleLines := wrapText(item.Title, 42, 2)
+			titleY := rowY + 38
+			for _, line := range titleLines {
+				canvas.DrawText(line, textX, titleY, 28, color.RGBA{29, 78, 216, 255})
+				titleY += 32
+			}
+			canvas.DrawText(formatAnimeSummary(item), textX, rowY+96, 22, color.RGBA{51, 65, 85, 255})
+			canvas.DrawText(formatAnimeDetails(item), textX, rowY+126, 20, color.RGBA{59, 130, 246, 255})
+		}
+	}
+
+	png, err := encodePNG(canvas)
+	return png, height, err
+}
+
+func AnimePreviewDimensions(preview AnimePreview) (int, int) {
+	variant := "list"
+	if len(preview.Items) == 0 {
+		if strings.TrimSpace(preview.Message) != "" || strings.TrimSpace(preview.ErrorCode) != "" {
+			variant = "fallback"
+		} else {
+			variant = "empty"
+		}
+	}
+	return PreviewWidth, animeHeight(len(preview.Items), preview.Stale, variant)
+}
+
+func drawSoftBackground(canvas *RGBA) {
+	canvas.FillRect(0, 0, PreviewWidth, PreviewHeight, color.RGBA{248, 251, 255, 255})
+	canvas.FillRect(0, 0, PreviewWidth, PreviewHeight/2, color.RGBA{232, 243, 255, 255})
+	canvas.FillRect(48, 36, 220, 180, color.RGBA{252, 207, 232, 80})
+	canvas.FillRect(930, 24, 220, 180, color.RGBA{147, 197, 253, 80})
+	canvas.FillRect(900, 440, 280, 160, color.RGBA{147, 197, 253, 55})
+}
+
+func drawBlueBackground(canvas *RGBA, h int) {
+	canvas.FillRect(0, 0, PreviewWidth, h, color.RGBA{248, 251, 255, 255})
+	canvas.FillRect(0, h/2, PreviewWidth, h/2, color.RGBA{219, 234, 254, 255})
+	canvas.FillRect(40, 60, 280, 190, color.RGBA{191, 219, 254, 95})
+	canvas.FillRect(940, h-250, 230, 190, color.RGBA{147, 197, 253, 75})
+}
+
+type textCandidate struct {
+	MaxChars   int
+	MaxLines   int
+	Size       int
+	LineHeight int
+}
+
+type textLayout struct {
+	Lines      []string
+	Size       int
+	LineHeight int
+}
+
+func chooseTextLayout(text string, candidates []textCandidate, maxHeight int) textLayout {
+	for _, candidate := range candidates {
+		lines := wrapText(text, candidate.MaxChars, candidate.MaxLines)
+		height := candidate.Size + max(0, len(lines)-1)*candidate.LineHeight
+		if height <= maxHeight {
+			return textLayout{Lines: lines, Size: candidate.Size, LineHeight: candidate.LineHeight}
+		}
+	}
+	last := candidates[len(candidates)-1]
+	return textLayout{Lines: wrapText(text, last.MaxChars, last.MaxLines), Size: last.Size, LineHeight: last.LineHeight}
+}
+
+type quoteEntry struct {
+	Category string
+	Quote    string
+	Author   string
+}
+
+func normalizeQuotes(values []map[string]any) []quoteEntry {
+	entries := make([]quoteEntry, 0, len(values))
+	for _, value := range values {
+		quote, _ := value["quote"].(string)
+		if strings.TrimSpace(quote) == "" {
+			continue
+		}
+		category, _ := value["category"].(string)
+		author, _ := value["author"].(string)
+		if category == "" {
+			category = "Quote"
+		}
+		if author == "" {
+			author = "Unknown"
+		}
+		entries = append(entries, quoteEntry{Category: category, Quote: quote, Author: author})
+	}
+	return entries
+}
+
+func quotesHeight(count int, stale bool, variant string) int {
+	if variant != "list" {
+		return 700
+	}
+	height := 260 + count*160
+	if stale {
+		height += 88
+	}
+	if height < 760 {
+		height = 760
+	}
+	return height
+}
+
+func animeHeight(count int, stale bool, variant string) int {
+	switch variant {
+	case "fallback":
+		return 720
+	case "empty":
+		if stale {
+			return 648
+		}
+		return 560
+	default:
+		height := 56*2 + 42 + 118 + count*154 + max(0, count-1)*22 + 64
+		if stale {
+			height += 88
+		}
+		if height < 720 {
+			height = 720
+		}
+		return height
+	}
+}
+
+func wrapText(value string, maxChars, maxLines int) []string {
+	text := strings.Join(strings.Fields(value), " ")
+	if text == "" {
+		return []string{""}
+	}
+	words := strings.Split(text, " ")
+	lines := []string{}
+	current := ""
+	for _, word := range words {
+		candidate := word
+		if current != "" {
+			candidate = current + " " + word
+		}
+		if len(candidate) <= maxChars {
+			current = candidate
+			continue
+		}
+		if current != "" {
+			lines = append(lines, current)
+			current = word
+		} else {
+			lines = append(lines, limit(word, maxChars))
+		}
+		if maxLines > 0 && len(lines) == maxLines {
+			lines[len(lines)-1] = limit(lines[len(lines)-1], maxChars)
+			return lines
+		}
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	if maxLines > 0 && len(lines) > maxLines {
+		lines = lines[:maxLines]
+		lines[len(lines)-1] = limit(lines[len(lines)-1], maxChars)
+	}
+	return lines
+}
+
+func drawScaledText(dst *image.RGBA, text string, x, baseline, size int, clr color.Color) {
+	if text == "" {
+		return
+	}
+	scale := max(1, size/13)
+	face := basicfont.Face7x13
+	w := font.MeasureString(face, text).Ceil()
+	tmp := image.NewRGBA(image.Rect(0, 0, w+4, 18))
+	drawer := &font.Drawer{
+		Dst:  tmp,
+		Src:  image.NewUniform(clr),
+		Face: face,
+		Dot:  fixed.P(2, 13),
+	}
+	drawer.DrawString(text)
+	scaled := imaging.Resize(tmp, tmp.Bounds().Dx()*scale, tmp.Bounds().Dy()*scale, imaging.NearestNeighbor)
+	draw.Draw(dst, image.Rect(x, baseline-size, x+scaled.Bounds().Dx(), baseline-size+scaled.Bounds().Dy()), scaled, image.Point{}, draw.Over)
+}
+
+func textWidth(text string, size int) int {
+	scale := max(1, size/13)
+	return font.MeasureString(basicfont.Face7x13, text).Ceil() * scale
 }
 
 func encodePNG(canvas *RGBA) ([]byte, error) {
-	var buf bytesBuffer
+	var buf bytes.Buffer
 	if err := canvas.EncodePNG(&buf); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
 }
 
-// bytesBuffer implements io.Writer using a byte slice.
-type bytesBuffer struct {
-	buf []byte
+func limit(value string, maxLen int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= maxLen {
+		return value
+	}
+	if maxLen <= 3 {
+		return value[:maxLen]
+	}
+	return strings.TrimSpace(value[:maxLen-3]) + "..."
 }
 
-func (b *bytesBuffer) Write(p []byte) (int, error) {
-	b.buf = append(b.buf, p...)
-	return len(p), nil
+func formatTime(value string) string {
+	if value == "" {
+		return "unknown time"
+	}
+	t, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return "unknown time"
+	}
+	return t.UTC().Format("Jan 2, 2006 15:04 UTC")
 }
 
-func (b *bytesBuffer) Bytes() []byte {
-	return b.buf
+func formatDate(value string) string {
+	if value == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return ""
+	}
+	return t.UTC().Format("Jan 2, 2006")
+}
+
+func fetchImage(url string) image.Image {
+	if strings.TrimSpace(url) == "" {
+		return nil
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+	req.Header.Set("User-Agent", "Mirabellier/1.0 (+https://mirabellier.com)")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil
+	}
+	img, _, err := image.Decode(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil
+	}
+	return img
+}
+
+func formatAnimeSummary(item AnimeItem) string {
+	mediaType := strings.TrimSpace(strings.ReplaceAll(item.MediaType, "_", " "))
+	if mediaType == "" {
+		mediaType = "Anime"
+	}
+	progress := fmt.Sprintf("%d watched", item.WatchedEpisodes)
+	if item.TotalEpisodes > 0 {
+		progress = fmt.Sprintf("%d / %d episodes", item.WatchedEpisodes, item.TotalEpisodes)
+	}
+	parts := []string{strings.Title(mediaType), progress}
+	if item.Score > 0 {
+		parts = append(parts, fmt.Sprintf("Score %d/10", item.Score))
+	}
+	return limit(strings.Join(parts, " - "), 74)
+}
+
+func formatAnimeDetails(item AnimeItem) string {
+	season := "Season unknown"
+	if item.Season != "" && item.SeasonYear > 0 {
+		season = strings.Title(item.Season) + fmt.Sprintf(" %d", item.SeasonYear)
+	}
+	return limit("Last update "+formatTime(item.UpdatedAt)+" - "+season, 82)
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

@@ -2,16 +2,20 @@ package posts
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"html"
 	"log"
 	"math/rand"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirabellier/mirabellier-backend-go/internal/auth"
+	"github.com/mirabellier/mirabellier-backend-go/internal/embed"
 	"github.com/mirabellier/mirabellier-backend-go/internal/seo"
 )
 
@@ -32,6 +36,7 @@ func RegisterRoutes(r *gin.RouterGroup, cfg *RouteConfig) {
 	r.POST("/posts/:id/comments", auth.Require(), h.addComment)
 	r.GET("/tags", h.listTags)
 	r.GET("/blog/:id", h.blogSEOPage)
+	r.GET("/blog/:id/embed-image.png", h.blogEmbedImage)
 }
 
 type handler struct {
@@ -40,6 +45,36 @@ type handler struct {
 }
 
 func (h *handler) blogSEOPage(c *gin.Context) {
+	post := h.loadBlogPost(c)
+	if post == nil {
+		return
+	}
+
+	if !seo.IsCrawler(c.GetHeader("User-Agent")) {
+		c.Redirect(http.StatusTemporaryRedirect, strings.TrimRight(h.websiteBase, "/")+"/blog/"+post.ID)
+		return
+	}
+
+	h.renderBlogShareHTML(c, post)
+}
+
+func (h *handler) blogEmbedImage(c *gin.Context) {
+	post := h.loadBlogPost(c)
+	if post == nil {
+		return
+	}
+	png, err := embed.RenderBlogEmbed(blogPreviewFromPost(post))
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to render blog preview image")
+		return
+	}
+	c.Header("Content-Type", "image/png")
+	c.Header("Content-Length", strconv.Itoa(len(png)))
+	seo.SetEmbedImageCacheHeaders(c)
+	c.Data(http.StatusOK, "image/png", png)
+}
+
+func (h *handler) loadBlogPost(c *gin.Context) *Post {
 	id := c.Param("id")
 	if strings.Contains(id, "-") {
 		parts := strings.Split(id, "-")
@@ -49,16 +84,120 @@ func (h *handler) blogSEOPage(c *gin.Context) {
 	post, err := GetPost(h.db, id)
 	if err != nil {
 		c.String(http.StatusNotFound, "Post not found")
-		return
+		return nil
 	}
+	return post
+}
 
-	seoData := &seo.BlogPostData{
-		ID:               post.ID,
-		Title:            post.Title,
-		ShortDescription: post.ShortDescription,
-		Thumbnail:        post.Thumbnail,
+func (h *handler) renderBlogShareHTML(c *gin.Context, post *Post) {
+	base := seo.WebsiteBase(h.websiteBase)
+	canonicalURL := base + "/blog/" + post.ID
+	version := seo.VersionHash("blog-render-v1", post.ID, post.Title, post.CreatedAt, stringValue(post.UpdatedAt), stringValue(post.ShortDescription), stringValue(post.Thumbnail))
+	imageURL := canonicalURL + "/embed-image.png?v=" + version
+	description := strings.TrimSpace(stringValue(post.ShortDescription))
+	if description == "" {
+		description = "A post from Mirabellier."
 	}
-	seo.RenderBlogSEOPage(c, seoData, h.websiteBase)
+	author := strings.TrimSpace(post.Author)
+	if author == "" {
+		author = "Mirabellier"
+	}
+	jsonLD, _ := json.Marshal(map[string]any{
+		"@context":         "https://schema.org",
+		"@type":            "BlogPosting",
+		"headline":         post.Title,
+		"description":      description,
+		"url":              canonicalURL,
+		"mainEntityOfPage": canonicalURL,
+		"datePublished":    post.CreatedAt,
+		"dateModified":     firstNonEmpty(stringValue(post.UpdatedAt), post.CreatedAt),
+		"author": map[string]any{
+			"@type": "Person",
+			"name":  author,
+		},
+		"publisher": map[string]any{
+			"@type": "Person",
+			"name":  "Mirabellier",
+			"url":   base + "/",
+		},
+		"image": []string{imageURL},
+	})
+	escapedJSON := strings.NewReplacer("<", "\\u003c", ">", "\\u003e", "&", "\\u0026").Replace(string(jsonLD))
+	tagMeta := ""
+	for _, tag := range post.Tags {
+		tagMeta += fmt.Sprintf("\n<meta property=\"article:tag\" content=\"%s\">", html.EscapeString(tag))
+	}
+	updatedAt := firstNonEmpty(stringValue(post.UpdatedAt), post.CreatedAt)
+	body := fmt.Sprintf(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>%s</title>
+<meta name="description" content="%s">
+<meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1">
+<meta property="og:type" content="article">
+<meta property="og:title" content="%s">
+<meta property="og:description" content="%s">
+<meta property="og:site_name" content="Mirabellier">
+<meta property="og:url" content="%s">
+<meta property="og:image" content="%s">
+<meta property="og:image:width" content="%d">
+<meta property="og:image:height" content="%d">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:alt" content="%s">
+<meta property="article:published_time" content="%s">
+<meta property="article:modified_time" content="%s">
+<meta property="article:author" content="%s">%s
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="%s">
+<meta name="twitter:description" content="%s">
+<meta name="twitter:image" content="%s">
+<meta name="twitter:image:alt" content="%s">
+<link rel="canonical" href="%s">
+<script type="application/ld+json">%s</script>
+</head>
+<body><main><h1>%s</h1><p>%s</p><p><a href="%s">Read full post</a></p></main></body>
+</html>`,
+		html.EscapeString(post.Title), html.EscapeString(description),
+		html.EscapeString(post.Title), html.EscapeString(description), html.EscapeString(canonicalURL),
+		html.EscapeString(imageURL), embed.PreviewWidth, embed.PreviewHeight, html.EscapeString(post.Title),
+		html.EscapeString(post.CreatedAt), html.EscapeString(updatedAt), html.EscapeString(author), tagMeta,
+		html.EscapeString(post.Title), html.EscapeString(description), html.EscapeString(imageURL),
+		html.EscapeString(post.Title), html.EscapeString(canonicalURL), escapedJSON,
+		html.EscapeString(post.Title), html.EscapeString(description), html.EscapeString(canonicalURL))
+
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	seo.SetNoStoreHeaders(c)
+	c.String(http.StatusOK, body)
+}
+
+func blogPreviewFromPost(post *Post) embed.BlogPreview {
+	return embed.BlogPreview{
+		Title:       post.Title,
+		Description: stringValue(post.ShortDescription),
+		Author:      post.Author,
+		PublishedAt: post.CreatedAt,
+		UpdatedAt:   stringValue(post.UpdatedAt),
+		Thumbnail:   stringValue(post.Thumbnail),
+		Tags:        post.Tags,
+	}
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (h *handler) listPosts(c *gin.Context) {
