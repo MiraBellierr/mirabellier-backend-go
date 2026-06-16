@@ -30,6 +30,23 @@ func WebsiteBase(base string) string {
 	return base
 }
 
+func PublicURL(base, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		return value
+	}
+	if strings.HasPrefix(value, "//") {
+		return "https:" + value
+	}
+	if strings.HasPrefix(value, "/") {
+		return WebsiteBase(base) + value
+	}
+	return WebsiteBase(base) + "/" + strings.TrimLeft(value, "/")
+}
+
 func SetNoStoreHeaders(c *gin.Context) {
 	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
 	c.Header("Pragma", "no-cache")

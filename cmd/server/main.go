@@ -70,6 +70,7 @@ func main() {
 	postCfg := &posts.RouteConfig{DB: db, WebsiteBase: cfg.WebsiteBase}
 	qo := qotdConfig(cfg)
 	anCfg := animeConfig(cfg)
+	shrineCfg := &shrines.Config{FrontendURL: cfg.FrontendURL, WebsiteBase: cfg.WebsiteBase}
 
 	// /v1 routes
 	v1 := r.Group("/v1")
@@ -80,7 +81,7 @@ func main() {
 		qotd.RegisterRoutes(v1, db, qo)
 		quotes.RegisterRoutes(v1, db, cfg)
 		anime.RegisterRoutes(v1, db, anCfg)
-		shrines.RegisterRoutes(v1, db)
+		shrines.RegisterRoutes(v1, db, shrineCfg)
 		arena.RegisterRoutes(v1, db)
 		images.RegisterRoutes(v1, db, cfg.ImagesDir)
 	}
@@ -94,7 +95,7 @@ func main() {
 		qotd.RegisterRoutes(noPrefix, db, qo)
 		quotes.RegisterRoutes(noPrefix, db, cfg)
 		anime.RegisterRoutes(noPrefix, db, anCfg)
-		shrines.RegisterRoutes(noPrefix, db)
+		shrines.RegisterRoutes(noPrefix, db, shrineCfg)
 		arena.RegisterRoutes(noPrefix, db)
 		images.RegisterRoutes(noPrefix, db, cfg.ImagesDir)
 	}
@@ -137,6 +138,7 @@ func authConfig(cfg *config.Config) *auth.Config {
 		DiscordCallbackURL:         cfg.DiscordCallbackURL,
 		FrontendURL:                cfg.FrontendURL,
 		FrontendURLs:               cfg.FrontendURLs,
+		WebsiteBase:                cfg.WebsiteBase,
 	}
 }
 

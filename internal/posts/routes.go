@@ -63,7 +63,7 @@ func (h *handler) blogEmbedImage(c *gin.Context) {
 	if post == nil {
 		return
 	}
-	png, err := embed.RenderBlogEmbed(blogPreviewFromPost(post))
+	png, err := embed.RenderBlogEmbed(h.blogPreviewFromPost(post))
 	if err != nil {
 		c.String(http.StatusInternalServerError, "Failed to render blog preview image")
 		return
@@ -172,14 +172,14 @@ func (h *handler) renderBlogShareHTML(c *gin.Context, post *Post) {
 	c.String(http.StatusOK, body)
 }
 
-func blogPreviewFromPost(post *Post) embed.BlogPreview {
+func (h *handler) blogPreviewFromPost(post *Post) embed.BlogPreview {
 	return embed.BlogPreview{
 		Title:       post.Title,
 		Description: stringValue(post.ShortDescription),
 		Author:      post.Author,
 		PublishedAt: post.CreatedAt,
 		UpdatedAt:   stringValue(post.UpdatedAt),
-		Thumbnail:   stringValue(post.Thumbnail),
+		Thumbnail:   seo.PublicURL(h.websiteBase, stringValue(post.Thumbnail)),
 		Tags:        post.Tags,
 	}
 }

@@ -4,9 +4,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirabellier/mirabellier-backend-go/internal/auth"
+	"github.com/mirabellier/mirabellier-backend-go/internal/embed"
+	"github.com/mirabellier/mirabellier-backend-go/internal/seo"
 )
 
 type ShrinePage struct {
@@ -41,19 +45,27 @@ var hardcodedShrines = map[string]ShrinePage{
 	},
 }
 
-func RegisterRoutes(r *gin.RouterGroup, db *sql.DB) {
-	h := &handler{db: db}
+type Config struct {
+	FrontendURL string
+	WebsiteBase string
+}
+
+func RegisterRoutes(r *gin.RouterGroup, db *sql.DB, cfg *Config) {
+	h := &handler{db: db, cfg: cfg}
 
 	r.GET("/shrines/pages", h.listPages)
 	r.GET("/shrines/pages/:slug", h.getPage)
 	r.POST("/shrines/pages", auth.Require(), h.createPage)
 	r.PUT("/shrines/pages/:slug", auth.Require(), h.updatePage)
 	r.GET("/shrine", h.hubSEOPage)
+	r.GET("/shrine/embed-image.png", h.hubEmbedImage)
+	r.GET("/shrine/:slug/embed-image.png", h.shrineEmbedImage)
 	r.GET("/shrine/:slug", h.shrineSEOPage)
 }
 
 type handler struct {
-	db *sql.DB
+	db  *sql.DB
+	cfg *Config
 }
 
 func (h *handler) listPages(c *gin.Context) {
@@ -177,9 +189,125 @@ func (h *handler) updatePage(c *gin.Context) {
 }
 
 func (h *handler) hubSEOPage(c *gin.Context) {
-	c.Redirect(http.StatusTemporaryRedirect, "/shrine")
+	if !seo.IsCrawler(c.GetHeader("User-Agent")) {
+		c.Redirect(http.StatusTemporaryRedirect, strings.TrimRight(h.cfg.FrontendURL, "/")+"/shrine")
+		return
+	}
+	version := seo.VersionHash("shrine-hub-render-v1")
+	seo.RenderShareHTML(c, h.cfg.WebsiteBase, seo.SharePage{
+		Title:       "Character Shrines",
+		Description: "Character shrine pages on Mirabellier.",
+		Path:        "/shrine",
+		ImagePath:   "/shrine/embed-image.png?v=" + version,
+		ImageWidth:  embed.PreviewWidth,
+		ImageHeight: embed.PreviewHeight,
+		ImageAlt:    "A preview image of Mirabellier character shrines.",
+	})
 }
 
 func (h *handler) shrineSEOPage(c *gin.Context) {
-	c.Redirect(http.StatusTemporaryRedirect, "/shrine/"+c.Param("slug"))
+	page := h.loadShrinePage(c.Param("slug"))
+	if page == nil {
+		c.String(http.StatusNotFound, "Shrine page not found")
+		return
+	}
+	if !seo.IsCrawler(c.GetHeader("User-Agent")) {
+		c.Redirect(http.StatusTemporaryRedirect, strings.TrimRight(h.cfg.FrontendURL, "/")+"/shrine/"+page.Slug)
+		return
+	}
+	desc := firstText(page.Description, page.Excerpt, "A character shrine on Mirabellier.")
+	version := seo.VersionHash("shrine-render-v1", page.Slug, page.Title, desc, stringValue(page.Image), page.UpdatedAt)
+	seo.RenderShareHTML(c, h.cfg.WebsiteBase, seo.SharePage{
+		Title:       page.Title,
+		Description: desc,
+		Path:        "/shrine/" + page.Slug,
+		ImagePath:   "/shrine/" + page.Slug + "/embed-image.png?v=" + version,
+		ImageWidth:  embed.PreviewWidth,
+		ImageHeight: embed.PreviewHeight,
+		ImageAlt:    firstText(page.ImageAlt, nil, "A preview image of "+page.Title+"."),
+	})
+}
+
+func (h *handler) hubEmbedImage(c *gin.Context) {
+	png, err := embed.RenderShrineEmbed(embed.ShrinePreview{
+		Title:       "Character Shrines",
+		Description: "Character shrine pages on Mirabellier.",
+		Slug:        "shrine",
+	})
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to render shrine preview image")
+		return
+	}
+	c.Header("Content-Type", "image/png")
+	c.Header("Content-Length", strconv.Itoa(len(png)))
+	seo.SetEmbedImageCacheHeaders(c)
+	c.Data(http.StatusOK, "image/png", png)
+}
+
+func (h *handler) shrineEmbedImage(c *gin.Context) {
+	page := h.loadShrinePage(c.Param("slug"))
+	if page == nil {
+		c.String(http.StatusNotFound, "Shrine page not found")
+		return
+	}
+	png, err := embed.RenderShrineEmbed(h.shrinePreviewFromPage(page))
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to render shrine preview image")
+		return
+	}
+	c.Header("Content-Type", "image/png")
+	c.Header("Content-Length", strconv.Itoa(len(png)))
+	seo.SetEmbedImageCacheHeaders(c)
+	c.Data(http.StatusOK, "image/png", png)
+}
+
+func (h *handler) loadShrinePage(slug string) *ShrinePage {
+	if page, ok := hardcodedShrines[slug]; ok {
+		return &page
+	}
+
+	var p ShrinePage
+	var aboutJSON, keywordsJSON, payloadJSON string
+	err := h.db.QueryRow(`
+		SELECT slug, path, title, description, excerpt, image, imageAlt, schemaType,
+		       aboutJson, keywordsJson, ctaLabel, priority, changefreq, payloadJson,
+		       createdAt, updatedAt
+		FROM shrine_pages WHERE slug = ?
+	`, slug).Scan(&p.Slug, &p.Path, &p.Title, &p.Description, &p.Excerpt, &p.Image, &p.ImageAlt,
+		&p.SchemaType, &aboutJSON, &keywordsJSON, &p.CTALabel, &p.Priority, &p.Changefreq,
+		&payloadJSON, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return nil
+	}
+	p.About = json.RawMessage(aboutJSON)
+	p.Keywords = json.RawMessage(keywordsJSON)
+	p.Payload = json.RawMessage(payloadJSON)
+	return &p
+}
+
+func (h *handler) shrinePreviewFromPage(page *ShrinePage) embed.ShrinePreview {
+	return embed.ShrinePreview{
+		Title:       page.Title,
+		Description: firstText(page.Description, page.Excerpt, "A character shrine on Mirabellier."),
+		Image:       seo.PublicURL(h.cfg.WebsiteBase, stringValue(page.Image)),
+		ImageAlt:    stringValue(page.ImageAlt),
+		Slug:        page.Slug,
+	}
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func firstText(primary, secondary *string, fallback string) string {
+	if primary != nil && strings.TrimSpace(*primary) != "" {
+		return *primary
+	}
+	if secondary != nil && strings.TrimSpace(*secondary) != "" {
+		return *secondary
+	}
+	return fallback
 }

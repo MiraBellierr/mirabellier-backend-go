@@ -56,6 +56,14 @@ type BlogPreview struct {
 	Tags        []string
 }
 
+type ShrinePreview struct {
+	Title       string
+	Description string
+	Image       string
+	ImageAlt    string
+	Slug        string
+}
+
 type RGBA struct {
 	img *image.RGBA
 }
@@ -73,6 +81,13 @@ func (c *RGBA) FillRect(x, y, w, h int, clr color.Color) {
 func (c *RGBA) FillBorderedRect(x, y, w, h, border int, fill, stroke color.Color) {
 	c.FillRect(x, y, w, h, stroke)
 	c.FillRect(x+border, y+border, w-border*2, h-border*2, fill)
+}
+
+func (c *RGBA) StrokeRect(x, y, w, h, border int, stroke color.Color) {
+	c.FillRect(x, y, w, border, stroke)
+	c.FillRect(x, y+h-border, w, border, stroke)
+	c.FillRect(x, y, border, h, stroke)
+	c.FillRect(x+w-border, y, border, h, stroke)
 }
 
 func (c *RGBA) DrawText(text string, x, y, size int, clr color.Color) {
@@ -101,57 +116,80 @@ func (c *RGBA) EncodePNG(w io.Writer) error {
 }
 
 func RenderProfileEmbed(username string, avatarURL, bio *string) ([]byte, error) {
-	canvas := NewRGBA(PreviewWidth, PreviewHeight, color.RGBA{248, 251, 255, 255})
-	canvas.FillBorderedRect(96, 96, 1008, 438, 5, color.RGBA{255, 255, 255, 235}, color.RGBA{96, 165, 250, 255})
-	canvas.DrawTextCentered("mirabellier.com", 600, 178, 24, color.RGBA{96, 165, 250, 255})
-	canvas.DrawTextCentered(username, 600, 314, 56, color.RGBA{29, 78, 216, 255})
-	if bio != nil && *bio != "" {
-		canvas.DrawTextCentered(limit(*bio, 96), 600, 392, 24, color.RGBA{71, 85, 105, 255})
+	canvas := newModernCanvas(PreviewHeight)
+	cardX, cardY, cardW, cardH := 86, 82, 1028, 466
+	drawPanel(canvas, cardX, cardY, cardW, cardH)
+	canvas.DrawText("mirabellier.com / profile", cardX+44, cardY+52, 18, mutedBlue())
+
+	avatarX, avatarY, avatarSize := cardX+44, cardY+118, 180
+	if avatarURL != nil {
+		if img := fetchImage(*avatarURL); img != nil {
+			canvas.DrawImage(img, avatarX, avatarY, avatarSize, avatarSize)
+		} else {
+			drawInitialBlock(canvas, avatarX, avatarY, avatarSize, avatarSize, username)
+		}
+	} else {
+		drawInitialBlock(canvas, avatarX, avatarY, avatarSize, avatarSize, username)
 	}
+	canvas.StrokeRect(avatarX, avatarY, avatarSize, avatarSize, 3, color.RGBA{191, 219, 254, 255})
+
+	textX := avatarX + avatarSize + 48
+	canvas.DrawText(limit(username, 34), textX, cardY+176, 52, deepBlue())
+	desc := "A Mirabellier profile."
+	if bio != nil && strings.TrimSpace(*bio) != "" {
+		desc = *bio
+	}
+	y := cardY + 232
+	for _, line := range wrapText(desc, 58, 4) {
+		canvas.DrawText(line, textX, y, 24, slate())
+		y += 32
+	}
+	canvas.DrawText("View profile", textX, cardY+cardH-58, 20, accentBlue())
 	return encodePNG(canvas)
 }
 
 func RenderQOTDEmbed(prompt string) ([]byte, error) {
-	canvas := NewRGBA(PreviewWidth, PreviewHeight, color.RGBA{248, 251, 255, 255})
-	drawSoftBackground(canvas)
+	canvas := newModernCanvas(PreviewHeight)
+	cardX, cardY, cardW, cardH := 104, 92, 992, 446
+	drawPanel(canvas, cardX, cardY, cardW, cardH)
+	canvas.DrawText("mirabellier.com / question of the day", cardX+44, cardY+52, 18, mutedBlue())
 
 	if strings.TrimSpace(prompt) == "" {
-		canvas.DrawTextCentered("No active question yet.", 600, 326, 44, color.RGBA{30, 58, 138, 255})
+		canvas.DrawTextCentered("No active question yet.", 600, 326, 44, deepBlue())
 		return encodePNG(canvas)
 	}
 
 	layout := chooseTextLayout(prompt, []textCandidate{
-		{28, 3, 62, 66}, {32, 4, 56, 60}, {36, 4, 50, 54}, {40, 5, 44, 48},
-		{46, 6, 38, 42}, {52, 7, 33, 37}, {58, 8, 29, 33}, {64, 9, 25, 29},
-	}, 360)
+		{26, 3, 58, 64}, {32, 4, 50, 56}, {38, 5, 42, 48},
+		{46, 6, 34, 40}, {56, 7, 28, 34},
+	}, 300)
 	textHeight := layout.Size + max(0, len(layout.Lines)-1)*layout.LineHeight
-	y := PreviewHeight/2 - textHeight/2 + layout.Size
+	y := cardY + 240 - textHeight/2 + layout.Size
 	for _, line := range layout.Lines {
-		canvas.DrawTextCentered(line, PreviewWidth/2, y, layout.Size, color.RGBA{30, 58, 138, 255})
+		canvas.DrawTextCentered(line, PreviewWidth/2, y, layout.Size, deepBlue())
 		y += layout.LineHeight
 	}
+	canvas.DrawTextCentered("Answer at mirabellier.com", 600, cardY+cardH-46, 19, mutedBlue())
 
 	return encodePNG(canvas)
 }
 
 func RenderBlogEmbed(preview BlogPreview) ([]byte, error) {
-	canvas := NewRGBA(PreviewWidth, PreviewHeight, color.RGBA{248, 251, 255, 255})
-	drawBlueBackground(canvas, PreviewHeight)
+	canvas := newModernCanvas(PreviewHeight)
 
 	cardX, cardY, cardW, cardH := 76, 76, 1048, 478
-	canvas.FillBorderedRect(cardX, cardY, cardW, cardH, 5, color.RGBA{255, 255, 255, 242}, color.RGBA{96, 165, 250, 255})
-	canvas.DrawText("mirabellier.com / blog", cardX+40, cardY+46, 18, color.RGBA{96, 165, 250, 255})
+	drawPanel(canvas, cardX, cardY, cardW, cardH)
+	canvas.DrawText("mirabellier.com / blog", cardX+40, cardY+46, 18, mutedBlue())
 
 	textW := 880
 	if preview.Thumbnail != "" {
 		textW = 650
+		imgX, imgY, imgW, imgH := cardX+cardW-316, cardY+76, 254, 326
 		if img := fetchImage(preview.Thumbnail); img != nil {
-			canvas.DrawImage(img, cardX+cardW-300, cardY+76, 238, 316)
-			canvas.FillBorderedRect(cardX+cardW-300, cardY+76, 238, 316, 3, color.RGBA{0, 0, 0, 0}, color.RGBA{147, 197, 253, 255})
+			canvas.DrawImage(img, imgX, imgY, imgW, imgH)
+			canvas.StrokeRect(imgX, imgY, imgW, imgH, 3, color.RGBA{191, 219, 254, 255})
 		} else {
-			canvas.FillBorderedRect(cardX+cardW-300, cardY+76, 238, 316, 3, color.RGBA{219, 234, 254, 255}, color.RGBA{147, 197, 253, 255})
-			canvas.DrawTextCentered("blog", cardX+cardW-181, cardY+220, 34, color.RGBA{29, 78, 216, 255})
-			canvas.DrawTextCentered("preview", cardX+cardW-181, cardY+262, 28, color.RGBA{59, 130, 246, 255})
+			drawInitialBlock(canvas, imgX, imgY, imgW, imgH, "blog")
 		}
 	}
 
@@ -166,7 +204,7 @@ func RenderBlogEmbed(preview BlogPreview) ([]byte, error) {
 	titleLines := wrapText(title, titleChars, 3)
 	y := cardY + 118
 	for _, line := range titleLines {
-		canvas.DrawText(line, cardX+40, y, 38, color.RGBA{29, 78, 216, 255})
+		canvas.DrawText(line, cardX+40, y, 38, deepBlue())
 		y += 44
 	}
 
@@ -179,7 +217,7 @@ func RenderBlogEmbed(preview BlogPreview) ([]byte, error) {
 		descChars = 72
 	}
 	for _, line := range wrapText(desc, descChars, 4) {
-		canvas.DrawText(line, cardX+42, y+22, 22, color.RGBA{51, 65, 85, 255})
+		canvas.DrawText(line, cardX+42, y+22, 22, slate())
 		y += 28
 	}
 
@@ -190,13 +228,52 @@ func RenderBlogEmbed(preview BlogPreview) ([]byte, error) {
 	if t := formatDate(preview.PublishedAt); t != "" {
 		meta += " - " + t
 	}
-	canvas.DrawText(meta, cardX+42, cardY+cardH-74, 20, color.RGBA{37, 99, 235, 255})
+	canvas.DrawText(meta, cardX+42, cardY+cardH-74, 20, accentBlue())
 
 	if len(preview.Tags) > 0 {
 		tagLine := "# " + strings.Join(preview.Tags, "  # ")
-		canvas.DrawText(limit(tagLine, 80), cardX+42, cardY+cardH-36, 18, color.RGBA{100, 116, 139, 255})
+		canvas.DrawText(limit(tagLine, 80), cardX+42, cardY+cardH-36, 18, mutedSlate())
 	}
 
+	return encodePNG(canvas)
+}
+
+func RenderShrineEmbed(preview ShrinePreview) ([]byte, error) {
+	canvas := newModernCanvas(PreviewHeight)
+	cardX, cardY, cardW, cardH := 76, 76, 1048, 478
+	drawPanel(canvas, cardX, cardY, cardW, cardH)
+	canvas.DrawText("mirabellier.com / shrine", cardX+40, cardY+46, 18, mutedBlue())
+
+	imageX, imageY, imageW, imageH := cardX+cardW-350, cardY+82, 288, 316
+	if preview.Image != "" {
+		if img := fetchImage(preview.Image); img != nil {
+			canvas.DrawImage(img, imageX, imageY, imageW, imageH)
+			canvas.StrokeRect(imageX, imageY, imageW, imageH, 3, color.RGBA{191, 219, 254, 255})
+		} else {
+			drawInitialBlock(canvas, imageX, imageY, imageW, imageH, preview.Title)
+		}
+	} else {
+		drawInitialBlock(canvas, imageX, imageY, imageW, imageH, preview.Title)
+	}
+
+	title := strings.TrimSpace(preview.Title)
+	if title == "" {
+		title = "Character Shrine"
+	}
+	y := cardY + 138
+	for _, line := range wrapText(title, 34, 3) {
+		canvas.DrawText(line, cardX+42, y, 42, deepBlue())
+		y += 48
+	}
+	desc := strings.TrimSpace(preview.Description)
+	if desc == "" {
+		desc = "A character shrine on Mirabellier."
+	}
+	for _, line := range wrapText(desc, 52, 4) {
+		canvas.DrawText(line, cardX+44, y+20, 22, slate())
+		y += 30
+	}
+	canvas.DrawText("Open shrine", cardX+44, cardY+cardH-56, 20, accentBlue())
 	return encodePNG(canvas)
 }
 
@@ -212,33 +289,32 @@ func RenderQuotesEmbed(quotes []map[string]any, stale bool, fetchedAt, message s
 	}
 
 	height := quotesHeight(len(normalized), stale, variant)
-	canvas := NewRGBA(PreviewWidth, height, color.RGBA{234, 244, 255, 255})
-	drawBlueBackground(canvas, height)
+	canvas := newModernCanvas(height)
 
 	cardX, cardY, cardW := 78, 84, 1044
 	cardH := height - cardY - 50
-	canvas.FillBorderedRect(cardX, cardY, cardW, cardH, 3, color.RGBA{255, 255, 255, 235}, color.RGBA{147, 197, 253, 255})
-	canvas.DrawText("Quote of the day", cardX+34, cardY+54, 34, color.RGBA{29, 78, 216, 255})
-	canvas.DrawText("mirabellier.com / quotes", cardX+34, cardY+90, 18, color.RGBA{96, 165, 250, 255})
+	drawPanel(canvas, cardX, cardY, cardW, cardH)
+	canvas.DrawText("Quote of the day", cardX+34, cardY+54, 34, deepBlue())
+	canvas.DrawText("mirabellier.com / quotes", cardX+34, cardY+90, 18, mutedBlue())
 
 	y := cardY + 132
 	if stale {
-		canvas.FillBorderedRect(cardX+34, y, cardW-68, 64, 2, color.RGBA{255, 251, 235, 255}, color.RGBA{245, 158, 11, 255})
+		canvas.FillBorderedRect(cardX+34, y, cardW-68, 64, 2, color.RGBA{255, 251, 235, 255}, color.RGBA{253, 186, 116, 255})
 		canvas.DrawText("Showing the last successful snapshot from "+formatTime(fetchedAt)+".", cardX+54, y+40, 18, color.RGBA{180, 83, 9, 255})
 		y += 86
 	}
 
 	switch variant {
 	case "empty":
-		canvas.DrawText("No daily quotes are available right now.", cardX+34, y+72, 34, color.RGBA{29, 78, 216, 255})
-		canvas.DrawText("The next quote snapshot will appear here once it is ready.", cardX+34, y+124, 22, color.RGBA{71, 85, 105, 255})
+		canvas.DrawText("No daily quotes are available right now.", cardX+34, y+72, 34, deepBlue())
+		canvas.DrawText("The next quote snapshot will appear here once it is ready.", cardX+34, y+124, 22, slate())
 	case "fallback":
-		canvas.DrawText("Quote preview status", cardX+34, y+48, 30, color.RGBA{29, 78, 216, 255})
+		canvas.DrawText("Quote preview status", cardX+34, y+48, 30, deepBlue())
 		for _, line := range wrapText(message, 62, 4) {
-			canvas.DrawText(line, cardX+34, y+98, 28, color.RGBA{51, 65, 85, 255})
+			canvas.DrawText(line, cardX+34, y+98, 28, slate())
 			y += 34
 		}
-		canvas.DrawText("The page will share cleanly again after the next quote snapshot.", cardX+34, y+148, 22, color.RGBA{71, 85, 105, 255})
+		canvas.DrawText("The page will share cleanly again after the next quote snapshot.", cardX+34, y+148, 22, slate())
 	default:
 		for i, entry := range normalized {
 			sectionY := y
@@ -246,14 +322,14 @@ func RenderQuotesEmbed(quotes []map[string]any, stale bool, fetchedAt, message s
 			if i == 0 {
 				label = "Featured quote"
 			}
-			canvas.DrawText(label, cardX+34, sectionY+28, 24, color.RGBA{29, 78, 216, 255})
+			canvas.DrawText(label, cardX+34, sectionY+28, 24, accentBlue())
 			lines := wrapText("\""+entry.Quote+"\"", 76, 5)
 			lineY := sectionY + 70
 			for _, line := range lines {
-				canvas.DrawText(line, cardX+52, lineY, 21, color.RGBA{51, 65, 85, 255})
+				canvas.DrawText(line, cardX+52, lineY, 21, slate())
 				lineY += 28
 			}
-			canvas.DrawText("-- "+entry.Author, cardX+52, lineY+16, 20, color.RGBA{37, 99, 235, 255})
+			canvas.DrawText("-- "+entry.Author, cardX+52, lineY+16, 20, mutedBlue())
 			y = lineY + 60
 		}
 	}
@@ -286,17 +362,16 @@ func RenderAnimeEmbed(preview AnimePreview) ([]byte, int, error) {
 	}
 
 	height := animeHeight(len(preview.Items), preview.Stale, variant)
-	canvas := NewRGBA(PreviewWidth, height, color.RGBA{248, 251, 255, 255})
-	drawBlueBackground(canvas, height)
+	canvas := newModernCanvas(height)
 
 	cardX, cardY, cardW := 84, 56, 1032
-	canvas.FillBorderedRect(cardX, cardY, cardW, height-cardY*2, 7, color.RGBA{255, 255, 255, 242}, color.RGBA{96, 165, 250, 255})
-	canvas.DrawText("mirabellier.com / anime", cardX+42, cardY+42, 18, color.RGBA{96, 165, 250, 255})
-	canvas.DrawText("my currently watching anime !!!", cardX+42, cardY+96, 40, color.RGBA{29, 78, 216, 255})
+	drawPanel(canvas, cardX, cardY, cardW, height-cardY*2)
+	canvas.DrawText("mirabellier.com / anime", cardX+42, cardY+42, 18, mutedBlue())
+	canvas.DrawText("Currently watching anime", cardX+42, cardY+96, 40, deepBlue())
 
 	y := cardY + 160
 	if preview.Stale {
-		canvas.FillBorderedRect(cardX+42, y, cardW-84, 66, 2, color.RGBA{255, 251, 235, 255}, color.RGBA{245, 158, 11, 255})
+		canvas.FillBorderedRect(cardX+42, y, cardW-84, 66, 2, color.RGBA{255, 251, 235, 255}, color.RGBA{253, 186, 116, 255})
 		canvas.DrawText("MyAnimeList did not answer on the latest refresh.", cardX+66, y+30, 20, color.RGBA{180, 83, 9, 255})
 		canvas.DrawText("Showing the last successful snapshot from "+formatTime(preview.FetchedAt)+".", cardX+66, y+54, 18, color.RGBA{146, 64, 14, 255})
 		y += 88
@@ -304,25 +379,24 @@ func RenderAnimeEmbed(preview AnimePreview) ([]byte, int, error) {
 
 	switch variant {
 	case "empty":
-		canvas.FillBorderedRect(cardX+144, y+42, cardW-288, 160, 3, color.RGBA{255, 255, 255, 240}, color.RGBA{191, 219, 254, 255})
-		canvas.DrawTextCentered("Nothing is marked as currently watching right now.", PreviewWidth/2, y+120, 30, color.RGBA{29, 78, 216, 255})
-		canvas.DrawTextCentered("The page is live and ready whenever the next anime gets added.", PreviewWidth/2, y+164, 22, color.RGBA{71, 85, 105, 255})
+		canvas.FillBorderedRect(cardX+144, y+42, cardW-288, 160, 3, color.RGBA{248, 251, 255, 255}, color.RGBA{219, 234, 254, 255})
+		canvas.DrawTextCentered("Nothing is marked as currently watching right now.", PreviewWidth/2, y+120, 30, deepBlue())
+		canvas.DrawTextCentered("The page is ready whenever the next anime gets added.", PreviewWidth/2, y+164, 22, slate())
 	case "fallback":
 		msg := preview.Message
 		if msg == "" {
 			msg = "The MyAnimeList feed is unavailable right now."
 		}
 		for _, line := range wrapText(msg, 38, 2) {
-			canvas.DrawText(line, cardX+42, y+18, 34, color.RGBA{30, 64, 175, 255})
+			canvas.DrawText(line, cardX+42, y+18, 34, deepBlue())
 			y += 38
 		}
-		canvas.DrawText("The page still shares cleanly.", cardX+70, y+96, 24, color.RGBA{51, 65, 85, 255})
-		canvas.FillBorderedRect(cardX+cardW-382, cardY+140, 320, 390, 3, color.RGBA{219, 234, 254, 255}, color.RGBA{147, 197, 253, 255})
-		canvas.DrawTextCentered("anime preview", cardX+cardW-222, cardY+332, 28, color.RGBA{29, 78, 216, 255})
+		canvas.DrawText("The page still shares cleanly.", cardX+70, y+96, 24, slate())
+		drawInitialBlock(canvas, cardX+cardW-382, cardY+140, 320, 390, "anime")
 	default:
 		for i, item := range preview.Items {
 			rowY := y + i*176
-			canvas.FillRect(cardX+32, rowY, cardW-64, 146, color.RGBA{255, 255, 255, 235})
+			canvas.FillBorderedRect(cardX+32, rowY, cardW-64, 146, 2, color.RGBA{248, 251, 255, 255}, color.RGBA{226, 232, 240, 255})
 			if img := fetchImage(item.CoverImage); img != nil {
 				canvas.DrawImage(img, cardX+42, rowY+12, 90, 126)
 			} else {
@@ -334,11 +408,11 @@ func RenderAnimeEmbed(preview AnimePreview) ([]byte, int, error) {
 			titleLines := wrapText(item.Title, 42, 2)
 			titleY := rowY + 38
 			for _, line := range titleLines {
-				canvas.DrawText(line, textX, titleY, 28, color.RGBA{29, 78, 216, 255})
+				canvas.DrawText(line, textX, titleY, 28, deepBlue())
 				titleY += 32
 			}
-			canvas.DrawText(formatAnimeSummary(item), textX, rowY+96, 22, color.RGBA{51, 65, 85, 255})
-			canvas.DrawText(formatAnimeDetails(item), textX, rowY+126, 20, color.RGBA{59, 130, 246, 255})
+			canvas.DrawText(formatAnimeSummary(item), textX, rowY+96, 22, slate())
+			canvas.DrawText(formatAnimeDetails(item), textX, rowY+126, 20, mutedBlue())
 		}
 	}
 
@@ -356,6 +430,52 @@ func AnimePreviewDimensions(preview AnimePreview) (int, int) {
 		}
 	}
 	return PreviewWidth, animeHeight(len(preview.Items), preview.Stale, variant)
+}
+
+func newModernCanvas(height int) *RGBA {
+	canvas := NewRGBA(PreviewWidth, height, color.RGBA{248, 251, 255, 255})
+	canvas.FillRect(0, 0, PreviewWidth, height, color.RGBA{248, 251, 255, 255})
+	canvas.FillRect(0, 0, PreviewWidth, 118, color.RGBA{239, 246, 255, 255})
+	canvas.FillRect(0, height-104, PreviewWidth, 104, color.RGBA{241, 245, 249, 255})
+	canvas.FillRect(0, 118, PreviewWidth, 3, color.RGBA{219, 234, 254, 255})
+	canvas.FillRect(0, height-106, PreviewWidth, 2, color.RGBA{226, 232, 240, 255})
+	return canvas
+}
+
+func drawPanel(canvas *RGBA, x, y, w, h int) {
+	canvas.FillRect(x+8, y+10, w, h, color.RGBA{219, 234, 254, 80})
+	canvas.FillBorderedRect(x, y, w, h, 3, color.RGBA{255, 255, 255, 250}, color.RGBA{191, 219, 254, 255})
+	canvas.FillRect(x+3, y+3, w-6, 8, color.RGBA{239, 246, 255, 255})
+}
+
+func drawInitialBlock(canvas *RGBA, x, y, w, h int, label string) {
+	canvas.FillBorderedRect(x, y, w, h, 3, color.RGBA{239, 246, 255, 255}, color.RGBA{191, 219, 254, 255})
+	initial := "M"
+	trimmed := strings.TrimSpace(label)
+	if trimmed != "" {
+		initial = strings.ToUpper(string([]rune(trimmed)[0]))
+	}
+	canvas.DrawTextCentered(initial, x+w/2, y+h/2+24, 58, deepBlue())
+}
+
+func deepBlue() color.Color {
+	return color.RGBA{30, 64, 175, 255}
+}
+
+func accentBlue() color.Color {
+	return color.RGBA{37, 99, 235, 255}
+}
+
+func mutedBlue() color.Color {
+	return color.RGBA{96, 165, 250, 255}
+}
+
+func slate() color.Color {
+	return color.RGBA{51, 65, 85, 255}
+}
+
+func mutedSlate() color.Color {
+	return color.RGBA{100, 116, 139, 255}
 }
 
 func drawSoftBackground(canvas *RGBA) {

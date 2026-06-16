@@ -81,4 +81,5 @@ type Config struct {
 	DiscordCallbackURL         string
 	FrontendURL                string
 	FrontendURLs               []string
+	WebsiteBase                string
 }

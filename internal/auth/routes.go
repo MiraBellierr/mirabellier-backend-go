@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mirabellier/mirabellier-backend-go/internal/embed"
+	"github.com/mirabellier/mirabellier-backend-go/internal/seo"
 	"golang.org/x/oauth2"
 )
 
@@ -29,8 +32,8 @@ func RegisterRoutes(r *gin.RouterGroup, db *sql.DB, cfg *Config) {
 	r.GET("/user/by-username/:username", h.getUserByUsername)
 	r.GET("/user/:id/stats", h.getUserStats)
 	r.GET("/profile/:username", h.profileSEOPage)
-	r.GET("/profile-embed/:username.png", h.profileEmbedPNG)
-	r.GET("/api/profile-embed/:username.png", h.profileEmbedPNG)
+	r.GET("/profile-embed/:username", h.profileEmbedPNG)
+	r.GET("/api/profile-embed/:username", h.profileEmbedPNG)
 }
 
 type handler struct {
@@ -217,11 +220,63 @@ func (h *handler) getUserStats(c *gin.Context) {
 }
 
 func (h *handler) profileSEOPage(c *gin.Context) {
-	c.Redirect(http.StatusTemporaryRedirect, h.cfg.FrontendURL+"/profile/"+c.Param("username"))
+	username := c.Param("username")
+	user, err := GetUserByUsername(h.db, username, h.cfg)
+	if err != nil {
+		c.String(http.StatusNotFound, "User not found")
+		return
+	}
+	if !seo.IsCrawler(c.GetHeader("User-Agent")) {
+		c.Redirect(http.StatusTemporaryRedirect, strings.TrimRight(h.cfg.FrontendURL, "/")+"/profile/"+username)
+		return
+	}
+	desc := "A Mirabellier profile."
+	if user.Bio != nil && strings.TrimSpace(*user.Bio) != "" {
+		desc = *user.Bio
+	}
+	version := seo.VersionHash("profile-render-v1", user.Username, stringValue(user.Avatar), stringValue(user.Bio), user.CreatedAt)
+	seo.RenderShareHTML(c, h.cfg.WebsiteBase, seo.SharePage{
+		Title:       user.Username + "'s Profile",
+		Description: desc,
+		Path:        "/profile/" + username,
+		ImagePath:   "/profile-embed/" + username + ".png?v=" + version,
+		ImageWidth:  embed.PreviewWidth,
+		ImageHeight: embed.PreviewHeight,
+		ImageAlt:    "A preview image of " + user.Username + "'s Mirabellier profile.",
+	})
 }
 
 func (h *handler) profileEmbedPNG(c *gin.Context) {
-	c.JSON(501, gin.H{"error": "embed images not yet implemented"})
+	user, err := GetUserByUsername(h.db, profileEmbedUsername(c.Param("username")), h.cfg)
+	if err != nil {
+		c.String(http.StatusNotFound, "User not found")
+		return
+	}
+	avatar := user.Avatar
+	if avatar != nil {
+		absoluteAvatar := seo.PublicURL(h.cfg.WebsiteBase, *avatar)
+		avatar = &absoluteAvatar
+	}
+	png, err := embed.RenderProfileEmbed(user.Username, avatar, user.Bio)
+	if err != nil {
+		c.String(http.StatusInternalServerError, "Failed to render profile preview image")
+		return
+	}
+	c.Header("Content-Type", "image/png")
+	c.Header("Content-Length", strconv.Itoa(len(png)))
+	seo.SetEmbedImageCacheHeaders(c)
+	c.Data(http.StatusOK, "image/png", png)
+}
+
+func profileEmbedUsername(value string) string {
+	return strings.TrimSuffix(value, ".png")
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func (h *handler) discordOAuthConfig() *oauth2.Config {

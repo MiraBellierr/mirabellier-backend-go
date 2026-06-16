@@ -11,11 +11,24 @@ import (
 // VaryUserAgent sets Vary: User-Agent for SEO routes where content differs for crawlers vs humans.
 func VaryUserAgent(paths ...string) gin.HandlerFunc {
 	pathSet := make(map[string]bool)
+	var prefixes []string
 	for _, p := range paths {
+		if strings.Contains(p, "*") {
+			prefixes = append(prefixes, strings.SplitN(p, "*", 2)[0])
+			continue
+		}
 		pathSet[p] = true
 	}
 	return func(c *gin.Context) {
-		if pathSet[c.Request.URL.Path] {
+		path := c.Request.URL.Path
+		shouldVary := pathSet[path]
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(path, prefix) {
+				shouldVary = true
+				break
+			}
+		}
+		if shouldVary {
 			c.Header("Vary", "User-Agent")
 		}
 		c.Next()
