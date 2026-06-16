@@ -384,55 +384,76 @@ func RenderQuotesEmbed(quotes []map[string]any, stale bool, fetchedAt, message s
 		}
 	}
 
-	layouts := buildQuoteLayouts(normalized)
-	height := quotesHeightFromLayouts(layouts, stale, variant)
-	canvas := newQuoteCanvas(height)
+	layouts := buildQuoteCardLayouts(normalized)
+	height := quotesCardHeight(layouts, stale, variant)
+	canvas := newQuotesSoftCanvas(height)
 
-	cardX, cardY, cardW := 78, 84, 1044
-	cardH := height - cardY - 50
+	cardX, cardY, cardW := 84, 56, 1032
+	cardH := height - cardY*2
 	canvas.FillRect(cardX+10, cardY+12, cardW, cardH, color.RGBA{191, 219, 254, 255})
-	canvas.FillBorderedRect(cardX, cardY, cardW, cardH, 3, color.RGBA{255, 255, 255, 255}, color.RGBA{147, 197, 253, 255})
-	drawFlowerAccent(canvas, cardX+cardW-158, cardY+26)
-	canvas.DrawText("Quote of the day", cardX+34, cardY+48, 34, color.RGBA{29, 78, 216, 255})
-	canvas.DrawText("("+formatTime(fetchedAt)+")", cardX+34, cardY+78, 18, color.RGBA{96, 165, 250, 255})
+	canvas.FillBorderedRect(cardX, cardY, cardW, cardH, 7, color.RGBA{255, 255, 255, 255}, color.RGBA{96, 165, 250, 255})
 
-	y := cardY + 118
+	// Header
+	canvas.DrawText("mirabellier.com / quotes", cardX+42, cardY+34, 18, accentBlue())
+	canvas.DrawText("Quote of the day \u2661", cardX+42, cardY+90, 40, deepBlue())
+
+	// Date + flower accent on right
+	dateStr := "(" + formatTime(fetchedAt) + ")"
+	dateW := textWidth(dateStr, 15)
+	dateX := cardX + cardW - dateW - 42
+	drawFlowerAccent(canvas, dateX-118, cardY+54)
+	canvas.DrawText(dateStr, dateX, cardY+78, 15, mutedBlue())
+
+	y := cardY + 42 + 102
 	if stale {
-		canvas.FillBorderedRect(cardX+34, y-8, cardW-68, 62, 2, color.RGBA{255, 251, 235, 255}, color.RGBA{245, 158, 11, 255})
-		canvas.DrawText("Showing the last successful quote snapshot.", cardX+56, y+18, 18, color.RGBA{180, 83, 9, 255})
-		canvas.DrawText("Updated: "+formatTime(fetchedAt), cardX+56, y+42, 16, color.RGBA{180, 83, 9, 255})
-		y += 84
+		canvas.FillBorderedRect(cardX+42, y-8, cardW-84, 66, 2, color.RGBA{255, 251, 235, 255}, color.RGBA{245, 158, 11, 255})
+		canvas.DrawText("Showing the last successful quote snapshot.", cardX+66, y+18, 20, color.RGBA{180, 83, 9, 255})
+		canvas.DrawText("Updated: "+formatTime(fetchedAt), cardX+66, y+44, 18, color.RGBA{146, 64, 14, 255})
+		y += 88
 	}
 
 	switch variant {
 	case "empty":
-		canvas.DrawText("No daily quotes are available right now.", cardX+34, cardY+184, 36, color.RGBA{29, 78, 216, 255})
-		canvas.DrawText("Check back soon for a new quote snapshot.", cardX+34, cardY+238, 22, color.RGBA{51, 65, 85, 255})
+		canvas.DrawTextCentered("No daily quotes are available right now.", PreviewWidth/2, cardY+240, 34, color.RGBA{29, 78, 216, 255})
+		canvas.DrawTextCentered("Check back soon for a new quote snapshot.", PreviewWidth/2, cardY+290, 22, color.RGBA{51, 65, 85, 255})
 	case "fallback":
-		canvas.DrawText("Quote preview status", cardX+34, cardY+184, 34, color.RGBA{29, 78, 216, 255})
-		lineY := cardY + 236
-		for _, line := range wrapText(message, 62, 4) {
-			canvas.DrawText(line, cardX+34, lineY, 26, color.RGBA{51, 65, 85, 255})
-			lineY += 34
+		msg := message
+		if msg == "" {
+			msg = "The quote feed is unavailable right now."
 		}
-		canvas.DrawText("The page still has a clean Discord preview.", cardX+34, lineY+40, 20, color.RGBA{37, 99, 235, 255})
+		textY := y + 24
+		for _, line := range wrapText(msg, 56, 3) {
+			canvas.DrawText(line, cardX+56, textY, 30, color.RGBA{29, 78, 216, 255})
+			textY += 38
+		}
+		canvas.DrawText("The page still has a clean Discord preview.", cardX+56, textY+60, 20, color.RGBA{37, 99, 235, 255})
 	default:
-		for i, layout := range layouts {
-			sectionY := y
+		quoteCardW := cardW - 120
+		for _, layout := range layouts {
+			qcX := cardX + 60
+			qcY := y
+			qcH := layout.CardHeight
+
+			canvas.FillBorderedRect(qcX, qcY, quoteCardW, qcH, 2, color.RGBA{248, 251, 255, 255}, color.RGBA{219, 234, 254, 255})
+
+			// Category label
 			label := layout.Entry.Category
-			labelSize, quoteSize, lineHeight := 20, 18, 22
-			if i == 0 {
+			if layout.IsFirst {
 				label = "Featured quote"
-				labelSize, quoteSize, lineHeight = 24, 21, 28
 			}
-			canvas.DrawText(label, cardX+34, sectionY+28, labelSize, color.RGBA{29, 78, 216, 255})
-			lineY := sectionY + 68
+			canvas.DrawText(label, qcX+24, qcY+38, 20, deepBlue())
+
+			// Quote text
+			qLineY := qcY + 72
 			for _, line := range layout.Lines {
-				canvas.DrawText(line, cardX+52, lineY, quoteSize, color.RGBA{15, 23, 42, 255})
-				lineY += lineHeight
+				canvas.DrawText(line, qcX+24, qLineY, 18, color.RGBA{15, 23, 42, 255})
+				qLineY += 24
 			}
-			canvas.DrawText("-- "+layout.Entry.Author, cardX+52, lineY+16, 20, color.RGBA{37, 99, 235, 255})
-			y += layout.Height + 18
+
+			// Author
+			canvas.DrawText("\u2014 "+layout.Entry.Author, qcX+24, qLineY+16, 18, accentBlue())
+
+			y += qcH + 14
 		}
 	}
 
@@ -450,7 +471,7 @@ func QuotesPreviewDimensions(quotes []map[string]any, stale bool, message string
 			variant = "empty"
 		}
 	}
-	return PreviewWidth, quotesHeightFromLayouts(buildQuoteLayouts(normalized), stale, variant)
+	return PreviewWidth, quotesCardHeight(buildQuoteCardLayouts(normalized), stale, variant)
 }
 
 func RenderAnimeEmbed(preview AnimePreview) ([]byte, int, error) {
@@ -622,14 +643,6 @@ func mutedSlate() color.Color {
 	return color.RGBA{100, 116, 139, 255}
 }
 
-func drawSoftBackground(canvas *RGBA) {
-	canvas.FillRect(0, 0, PreviewWidth, PreviewHeight, color.RGBA{248, 251, 255, 255})
-	canvas.FillRect(0, 0, PreviewWidth, PreviewHeight/2, color.RGBA{232, 243, 255, 255})
-	canvas.FillRect(48, 36, 220, 180, color.RGBA{252, 207, 232, 80})
-	canvas.FillRect(930, 24, 220, 180, color.RGBA{147, 197, 253, 80})
-	canvas.FillRect(900, 440, 280, 160, color.RGBA{147, 197, 253, 55})
-}
-
 func drawQuestionBackground(canvas *RGBA) {
 	for y := 0; y < PreviewHeight; y++ {
 		t := float64(y) / float64(PreviewHeight-1)
@@ -640,14 +653,6 @@ func drawQuestionBackground(canvas *RGBA) {
 	}
 }
 
-func newQuoteCanvas(height int) *RGBA {
-	canvas := NewRGBA(PreviewWidth, height, color.RGBA{234, 244, 255, 255})
-	canvas.FillRect(0, 0, PreviewWidth, height, color.RGBA{234, 244, 255, 255})
-	canvas.FillRect(0, 0, PreviewWidth, height/2, color.RGBA{248, 251, 255, 255})
-	canvas.FillRect(0, height/2, PreviewWidth, height-height/2, color.RGBA{219, 234, 254, 255})
-	return canvas
-}
-
 func drawFlowerAccent(canvas *RGBA, x, y int) {
 	petal := color.RGBA{252, 207, 232, 255}
 	canvas.FillCircle(x+28, y+20, 18, petal)
@@ -656,6 +661,35 @@ func drawFlowerAccent(canvas *RGBA, x, y int) {
 	canvas.FillCircle(x+58, y+50, 18, petal)
 	canvas.FillCircle(x+43, y+35, 13, color.RGBA{147, 197, 253, 255})
 	canvas.FillRect(x+82, y+34, 46, 3, color.RGBA{147, 197, 253, 255})
+}
+
+func drawTinyFlower(canvas *RGBA, cx, cy, r int) {
+	// Center petal
+	canvas.FillCircle(cx, cy, r, color.RGBA{252, 207, 232, 180})
+	// Surrounding petals
+	rr := r + 2
+	canvas.FillCircle(cx-rr, cy-rr/2, rr, color.RGBA{191, 219, 254, 160})
+	canvas.FillCircle(cx+rr, cy-rr/2, rr, color.RGBA{191, 219, 254, 160})
+	canvas.FillCircle(cx-rr, cy+rr/2, rr, color.RGBA{191, 219, 254, 160})
+	canvas.FillCircle(cx+rr, cy+rr/2, rr, color.RGBA{191, 219, 254, 160})
+}
+
+func newQuotesSoftCanvas(height int) *RGBA {
+	canvas := NewRGBA(PreviewWidth, height, color.RGBA{248, 251, 255, 255})
+	for y := 0; y < height; y++ {
+		t := float64(y) / float64(max(1, height-1))
+		r := uint8(248*(1-t) + 239*t)
+		g := uint8(251*(1-t) + 246*t)
+		b := uint8(255)
+		canvas.FillRect(0, y, PreviewWidth, 1, color.RGBA{r, g, b, 255})
+	}
+	// Decorative circles in top corners
+	canvas.FillCircle(110, 90, 80, color.RGBA{191, 219, 254, 70})
+	canvas.FillCircle(PreviewWidth-80, 70, 65, color.RGBA{252, 207, 232, 55})
+	// Small flower decorations
+	drawTinyFlower(canvas, 58, 58, 9)
+	drawTinyFlower(canvas, PreviewWidth-56, 56, 9)
+	return canvas
 }
 
 func newAnimeCanvas(height int, variant string) *RGBA {
@@ -694,13 +728,6 @@ func drawAnimePosterFallback(canvas *RGBA, x, y, w, h int) {
 	canvas.DrawTextCentered("preview", x+w/2, y+h/2+28, 24, color.RGBA{59, 130, 246, 255})
 }
 
-func drawBlueBackground(canvas *RGBA, h int) {
-	canvas.FillRect(0, 0, PreviewWidth, h, color.RGBA{248, 251, 255, 255})
-	canvas.FillRect(0, h/2, PreviewWidth, h/2, color.RGBA{219, 234, 254, 255})
-	canvas.FillRect(40, 60, 280, 190, color.RGBA{191, 219, 254, 95})
-	canvas.FillRect(940, h-250, 230, 190, color.RGBA{147, 197, 253, 75})
-}
-
 type textCandidate struct {
 	MaxChars   int
 	MaxLines   int
@@ -732,10 +759,11 @@ type quoteEntry struct {
 	Author   string
 }
 
-type quoteLayout struct {
-	Entry  quoteEntry
-	Lines  []string
-	Height int
+type quoteCardLayout struct {
+	Entry      quoteEntry
+	Lines      []string
+	CardHeight int
+	IsFirst    bool
 }
 
 func normalizeQuotes(values []map[string]any) []quoteEntry {
@@ -758,45 +786,39 @@ func normalizeQuotes(values []map[string]any) []quoteEntry {
 	return entries
 }
 
-func buildQuoteLayouts(entries []quoteEntry) []quoteLayout {
-	layouts := make([]quoteLayout, 0, len(entries))
+func buildQuoteCardLayouts(entries []quoteEntry) []quoteCardLayout {
+	layouts := make([]quoteCardLayout, 0, len(entries))
 	for i, entry := range entries {
-		maxChars, maxLines, lineHeight := 74, 0, 22
-		if i == 0 {
-			lineHeight = 28
-		}
-		lines := wrapText("\""+entry.Quote+"\"", maxChars, maxLines)
-		authorY := 68 + max(0, len(lines)-1)*lineHeight + 38
-		if i > 0 {
-			authorY = 68 + max(0, len(lines)-1)*lineHeight + 34
-		}
-		layouts = append(layouts, quoteLayout{
-			Entry:  entry,
-			Lines:  lines,
-			Height: authorY + 22,
+		lines := wrapText("\u201C"+entry.Quote+"\u201D", 58, 4)
+		cardH := 24 + 20 + 14 + len(lines)*24 + 18 + 18 + 24 + 4
+		layouts = append(layouts, quoteCardLayout{
+			Entry:      entry,
+			Lines:      lines,
+			CardHeight: cardH,
+			IsFirst:    i == 0,
 		})
 	}
 	return layouts
 }
 
-func quotesHeightFromLayouts(layouts []quoteLayout, stale bool, variant string) int {
+func quotesCardHeight(layouts []quoteCardLayout, stale bool, variant string) int {
 	if variant != "list" {
 		return 700
 	}
 	contentHeight := 0
 	for i, layout := range layouts {
 		if i > 0 {
-			contentHeight += 18
+			contentHeight += 14
 		}
-		contentHeight += layout.Height
+		contentHeight += layout.CardHeight
 	}
-	cardHeight := 118 + contentHeight + 40
+	cardH := 144 + contentHeight + 60
 	if stale {
-		cardHeight += 84
+		cardH += 88
 	}
-	height := 84 + cardHeight + 60
-	if height < 760 {
-		height = 760
+	height := 112 + cardH
+	if height < 700 {
+		height = 700
 	}
 	return height
 }
