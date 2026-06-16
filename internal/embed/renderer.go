@@ -13,11 +13,13 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/disintegration/imaging"
 	"golang.org/x/image/font"
-	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/font/gofont/goregular"
+	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -67,6 +69,38 @@ type ShrinePreview struct {
 
 type RGBA struct {
 	img *image.RGBA
+}
+
+var (
+	goRegularFont *opentype.Font
+	goRegularOnce sync.Once
+	faceCache     = map[int]font.Face{}
+	faceCacheMu   sync.Mutex
+)
+
+func getFace(size int) font.Face {
+	faceCacheMu.Lock()
+	defer faceCacheMu.Unlock()
+	if f, ok := faceCache[size]; ok {
+		return f
+	}
+	goRegularOnce.Do(func() {
+		f, err := opentype.Parse(goregular.TTF)
+		if err != nil {
+			panic(err)
+		}
+		goRegularFont = f
+	})
+	face, err := opentype.NewFace(goRegularFont, &opentype.FaceOptions{
+		Size:    float64(size),
+		DPI:     72,
+		Hinting: font.HintingFull,
+	})
+	if err != nil {
+		panic(err)
+	}
+	faceCache[size] = face
+	return face
 }
 
 func NewRGBA(width, height int, bg color.Color) *RGBA {
@@ -830,24 +864,19 @@ func drawScaledText(dst *image.RGBA, text string, x, baseline, size int, clr col
 	if text == "" {
 		return
 	}
-	scale := max(1, size/13)
-	face := basicfont.Face7x13
-	w := font.MeasureString(face, text).Ceil()
-	tmp := image.NewRGBA(image.Rect(0, 0, w+4, 18))
+	face := getFace(size)
 	drawer := &font.Drawer{
-		Dst:  tmp,
+		Dst:  dst,
 		Src:  image.NewUniform(clr),
 		Face: face,
-		Dot:  fixed.P(2, 13),
+		Dot:  fixed.P(x, baseline),
 	}
 	drawer.DrawString(text)
-	scaled := imaging.Resize(tmp, tmp.Bounds().Dx()*scale, tmp.Bounds().Dy()*scale, imaging.NearestNeighbor)
-	draw.Draw(dst, image.Rect(x, baseline-size, x+scaled.Bounds().Dx(), baseline-size+scaled.Bounds().Dy()), scaled, image.Point{}, draw.Over)
 }
 
 func textWidth(text string, size int) int {
-	scale := max(1, size/13)
-	return font.MeasureString(basicfont.Face7x13, text).Ceil() * scale
+	face := getFace(size)
+	return font.MeasureString(face, text).Ceil()
 }
 
 func encodePNG(canvas *RGBA) ([]byte, error) {
