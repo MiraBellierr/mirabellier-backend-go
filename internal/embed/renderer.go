@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -141,6 +142,37 @@ func (c *RGBA) DrawImage(src image.Image, x, y, w, h int) {
 	}
 	resized := imaging.Fill(src, w, h, imaging.Center, imaging.Lanczos)
 	draw.Draw(c.img, image.Rect(x, y, x+w, y+h), resized, image.Point{}, draw.Over)
+}
+
+func (c *RGBA) DrawProgressBar(x, y, w, h int, pct float64, fill, bg, textClr color.Color) {
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 1 {
+		pct = 1
+	}
+	// Background track
+	c.FillBorderedRect(x, y, w, h, 1, color.RGBA{248, 251, 255, 255}, bg)
+	// Filled portion
+	fillW := int(float64(w-4) * pct)
+	if fillW > 0 {
+		c.FillRect(x+2, y+2, fillW, h-4, fill)
+	}
+	pctText := fmt.Sprintf("%.0f%%", pct*100)
+	pctX := x + w + 10
+	c.DrawText(pctText, pctX, y+h+2, h+5, textClr)
+}
+
+func (c *RGBA) DrawBadge(x, y int, text string, size int) int {
+	padX, padYT, padYB := 8, 4, 4
+	w := textWidth(text, size) + padX*2
+	h := padYT + size + padYB
+	bg := color.RGBA{239, 246, 255, 255}
+	border := color.RGBA{191, 219, 254, 255}
+	textClr := color.RGBA{51, 65, 85, 255}
+	c.FillBorderedRect(x, y, w, h, 1, bg, border)
+	c.DrawText(text, x+padX, y+padYT+size, size, textClr)
+	return x + w
 }
 
 func (c *RGBA) EncodePNG(w io.Writer) error {
@@ -434,29 +466,63 @@ func RenderAnimeEmbed(preview AnimePreview) ([]byte, int, error) {
 		canvas.DrawText("The page still has a clean Discord preview.", cardX+56, textY+84, 22, color.RGBA{51, 65, 85, 255})
 		drawAnimePosterFallback(canvas, cardX+cardW-352, cardY+164, 260, 340)
 	default:
+		const rowH = 116
+		const rowGap = 10
+		const posterW = 76
+		const posterH = 106
 		contentW := cardW - 84
 		for i, item := range preview.Items {
-			rowY := y + i*(154+22)
-			canvas.FillBorderedRect(cardX+32, rowY, contentW+20, 146, 2, color.RGBA{248, 251, 255, 255}, color.RGBA{219, 234, 254, 255})
-			coverX, coverY := cardX+42, rowY+12
+			rowY := y + i*(rowH+rowGap)
+			canvas.FillBorderedRect(cardX+32, rowY, contentW+20, rowH, 2, color.RGBA{248, 251, 255, 255}, color.RGBA{219, 234, 254, 255})
+			// Poster image
+			coverX, coverY := cardX+48, rowY+4
 			if img := fetchImage(item.CoverImage); img != nil {
-				canvas.DrawImage(img, coverX, coverY, 90, 126)
+				canvas.DrawImage(img, coverX, coverY, posterW, posterH)
 			} else {
-				canvas.FillBorderedRect(coverX, coverY, 90, 126, 2, color.RGBA{239, 246, 255, 255}, color.RGBA{191, 219, 254, 255})
-				canvas.DrawTextCentered("NO", coverX+45, coverY+54, 14, color.RGBA{96, 165, 250, 255})
-				canvas.DrawTextCentered("ART", coverX+45, coverY+78, 14, color.RGBA{96, 165, 250, 255})
+				canvas.FillBorderedRect(coverX, coverY, posterW, posterH, 2, color.RGBA{239, 246, 255, 255}, color.RGBA{191, 219, 254, 255})
+				canvas.DrawTextCentered("NO", coverX+posterW/2, coverY+posterH/2-6, 14, color.RGBA{96, 165, 250, 255})
+				canvas.DrawTextCentered("ART", coverX+posterW/2, coverY+posterH/2+16, 14, color.RGBA{96, 165, 250, 255})
 			}
-			textX := cardX + 158
-			canvas.FillCircle(textX-22, rowY+32, 15, color.RGBA{219, 234, 254, 255})
-			canvas.DrawTextCentered(fmt.Sprintf("%d", i+1), textX-22, rowY+40, 14, color.RGBA{29, 78, 216, 255})
-			titleY := rowY + 36
-			for _, line := range wrapText(item.Title, 42, 2) {
-				canvas.DrawText(line, textX, titleY, 28, color.RGBA{30, 64, 175, 255})
-				titleY += 32
+
+			textX := coverX + posterW + 16
+
+			// Number on the right
+			numStr := fmt.Sprintf("#%02d", i+1)
+			canvas.DrawTextRight(numStr, cardX+cardW-40, rowY+26, 16, mutedBlue())
+
+			// Title (up to 2 lines)
+			titleY := rowY + 26
+			for _, line := range wrapText(item.Title, 36, 2) {
+				canvas.DrawText(line, textX, titleY, 24, deepBlue())
+				titleY += 28
 			}
-			canvas.DrawText(formatAnimeSummary(item), textX, rowY+92, 22, color.RGBA{15, 23, 42, 255})
-			canvas.DrawText(formatAnimeDetails(item), textX, rowY+122, 20, color.RGBA{29, 78, 216, 255})
-			canvas.FillRect(cardX+42, rowY+148, cardW-84, 2, color.RGBA{219, 234, 254, 255})
+
+			// Badge row
+			badgeY := rowY + 60
+			badgeX := textX
+			mediaType, progressStr, thirdBadge := animeBadgeTexts(item)
+			badgeX = canvas.DrawBadge(badgeX, badgeY, mediaType, 15)
+			if progressStr != "" {
+				badgeX = canvas.DrawBadge(badgeX+6, badgeY, progressStr, 15)
+			}
+			if thirdBadge != "" {
+				canvas.DrawBadge(badgeX+6, badgeY, thirdBadge, 15)
+			}
+
+			// Progress bar
+			barY := rowY + 82
+			barW := 340
+			barH := 8
+			pct, pctLabel := animeProgress(item)
+			if pctLabel == "caught up" {
+				canvas.DrawProgressBar(textX, barY, barW, barH, 1.0, accentBlue(), color.RGBA{219, 234, 254, 255}, accentBlue())
+				canvas.DrawText("caught up", textX+barW+12, barY+barH+2, barH+5, accentBlue())
+			} else {
+				canvas.DrawProgressBar(textX, barY, barW, barH, pct, accentBlue(), color.RGBA{219, 234, 254, 255}, slate())
+			}
+
+			// Updated date
+			canvas.DrawText(formatShortDate(item.UpdatedAt), textX, rowY+106, 13, mutedSlate())
 		}
 	}
 
@@ -711,7 +777,7 @@ func animeHeight(count int, stale bool, variant string) int {
 		}
 		return 560
 	default:
-		height := 56*2 + 42 + 118 + count*154 + max(0, count-1)*22 + 64
+		height := 56*2 + 42 + 118 + count*116 + max(0, count-1)*10 + 64
 		if stale {
 			height += 88
 		}
@@ -851,28 +917,47 @@ func fetchImage(url string) image.Image {
 	return img
 }
 
-func formatAnimeSummary(item AnimeItem) string {
-	mediaType := strings.TrimSpace(strings.ReplaceAll(item.MediaType, "_", " "))
+func animeBadgeTexts(item AnimeItem) (mediaType, progress, third string) {
+	mediaType = strings.TrimSpace(strings.ReplaceAll(item.MediaType, "_", " "))
 	if mediaType == "" {
 		mediaType = "Anime"
 	}
-	progress := fmt.Sprintf("%d watched", item.WatchedEpisodes)
+	mediaType = strings.Title(mediaType)
+
 	if item.TotalEpisodes > 0 {
-		progress = fmt.Sprintf("%d / %d episodes", item.WatchedEpisodes, item.TotalEpisodes)
+		progress = fmt.Sprintf("%d / %d eps", item.WatchedEpisodes, item.TotalEpisodes)
+	} else {
+		progress = fmt.Sprintf("%d watched", item.WatchedEpisodes)
 	}
-	parts := []string{strings.Title(mediaType), progress}
-	if item.Score > 0 {
-		parts = append(parts, fmt.Sprintf("Score %d/10", item.Score))
+
+	if item.Season != "" && item.SeasonYear > 0 {
+		third = strings.Title(item.Season) + " " + strconv.Itoa(item.SeasonYear)
+	} else if item.Score > 0 {
+		third = fmt.Sprintf("Score %d", item.Score)
 	}
-	return limit(strings.Join(parts, " - "), 74)
+	return
 }
 
-func formatAnimeDetails(item AnimeItem) string {
-	season := "Season unknown"
-	if item.Season != "" && item.SeasonYear > 0 {
-		season = strings.Title(item.Season) + fmt.Sprintf(" %d", item.SeasonYear)
+func animeProgress(item AnimeItem) (pct float64, label string) {
+	if item.TotalEpisodes > 0 {
+		if item.WatchedEpisodes >= item.TotalEpisodes {
+			return 1.0, "caught up"
+		}
+		pct := float64(item.WatchedEpisodes) / float64(item.TotalEpisodes)
+		return pct, fmt.Sprintf("%.0f%%", pct*100)
 	}
-	return limit("Last update "+formatTime(item.UpdatedAt)+" - "+season, 82)
+	return 1.0, fmt.Sprintf("%d watched", item.WatchedEpisodes)
+}
+
+func formatShortDate(value string) string {
+	if value == "" {
+		return "Updated recently"
+	}
+	t, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return "Updated recently"
+	}
+	return "Updated " + t.UTC().Format("Jan 2, 2006")
 }
 
 func max(a, b int) int {
