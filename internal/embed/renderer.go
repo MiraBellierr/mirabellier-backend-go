@@ -324,8 +324,8 @@ func RenderQuotesEmbed(quotes []map[string]any, stale bool, fetchedAt, message s
 
 	cardX, cardY, cardW := 78, 84, 1044
 	cardH := height - cardY - 50
-	canvas.FillRect(cardX+10, cardY+12, cardW, cardH, color.RGBA{147, 197, 253, 45})
-	canvas.FillBorderedRect(cardX, cardY, cardW, cardH, 3, color.RGBA{255, 255, 255, 235}, color.RGBA{147, 197, 253, 255})
+	canvas.FillRect(cardX+10, cardY+12, cardW, cardH, color.RGBA{191, 219, 254, 255})
+	canvas.FillBorderedRect(cardX, cardY, cardW, cardH, 3, color.RGBA{255, 255, 255, 255}, color.RGBA{147, 197, 253, 255})
 	drawFlowerAccent(canvas, cardX+cardW-158, cardY+26)
 	canvas.DrawText("Quote of the day", cardX+34, cardY+48, 34, color.RGBA{29, 78, 216, 255})
 	canvas.DrawText("("+formatTime(fetchedAt)+")", cardX+34, cardY+78, 18, color.RGBA{96, 165, 250, 255})
@@ -362,7 +362,7 @@ func RenderQuotesEmbed(quotes []map[string]any, stale bool, fetchedAt, message s
 			canvas.DrawText(label, cardX+34, sectionY+28, labelSize, color.RGBA{29, 78, 216, 255})
 			lineY := sectionY + 68
 			for _, line := range layout.Lines {
-				canvas.DrawText(line, cardX+52, lineY, quoteSize, color.RGBA{51, 65, 85, 255})
+				canvas.DrawText(line, cardX+52, lineY, quoteSize, color.RGBA{15, 23, 42, 255})
 				lineY += lineHeight
 			}
 			canvas.DrawText("-- "+layout.Entry.Author, cardX+52, lineY+16, 20, color.RGBA{37, 99, 235, 255})
@@ -402,10 +402,10 @@ func RenderAnimeEmbed(preview AnimePreview) ([]byte, int, error) {
 
 	cardX, cardY, cardW := 84, 56, 1032
 	cardH := height - cardY*2
-	canvas.FillRect(cardX+10, cardY+12, cardW, cardH, color.RGBA{96, 165, 250, 36})
-	canvas.FillBorderedRect(cardX, cardY, cardW, cardH, 7, color.RGBA{255, 255, 255, 246}, color.RGBA{96, 165, 250, 255})
-	canvas.DrawText("mirabellier.com / anime", cardX+42, cardY+34, 18, color.RGBA{96, 165, 250, 255})
-	canvas.DrawText("my currently watching anime !!!", cardX+42, cardY+90, 40, color.RGBA{29, 78, 216, 255})
+	canvas.FillRect(cardX+10, cardY+12, cardW, cardH, color.RGBA{191, 219, 254, 255})
+	canvas.FillBorderedRect(cardX, cardY, cardW, cardH, 7, color.RGBA{255, 255, 255, 255}, color.RGBA{96, 165, 250, 255})
+	canvas.DrawText("mirabellier.com / anime", cardX+42, cardY+34, 18, color.RGBA{37, 99, 235, 255})
+	canvas.DrawText("my currently watching anime !!!", cardX+42, cardY+90, 40, color.RGBA{30, 64, 175, 255})
 
 	y := cardY + 42 + 102
 	if preview.Stale {
@@ -437,7 +437,7 @@ func RenderAnimeEmbed(preview AnimePreview) ([]byte, int, error) {
 		contentW := cardW - 84
 		for i, item := range preview.Items {
 			rowY := y + i*(154+22)
-			canvas.FillRect(cardX+32, rowY, contentW+20, 146, color.RGBA{255, 255, 255, 220})
+			canvas.FillBorderedRect(cardX+32, rowY, contentW+20, 146, 2, color.RGBA{248, 251, 255, 255}, color.RGBA{219, 234, 254, 255})
 			coverX, coverY := cardX+42, rowY+12
 			if img := fetchImage(item.CoverImage); img != nil {
 				canvas.DrawImage(img, coverX, coverY, 90, 126)
@@ -451,11 +451,11 @@ func RenderAnimeEmbed(preview AnimePreview) ([]byte, int, error) {
 			canvas.DrawTextCentered(fmt.Sprintf("%d", i+1), textX-22, rowY+40, 14, color.RGBA{29, 78, 216, 255})
 			titleY := rowY + 36
 			for _, line := range wrapText(item.Title, 42, 2) {
-				canvas.DrawText(line, textX, titleY, 28, color.RGBA{29, 78, 216, 255})
+				canvas.DrawText(line, textX, titleY, 28, color.RGBA{30, 64, 175, 255})
 				titleY += 32
 			}
-			canvas.DrawText(formatAnimeSummary(item), textX, rowY+92, 22, color.RGBA{51, 65, 85, 255})
-			canvas.DrawText(formatAnimeDetails(item), textX, rowY+122, 20, color.RGBA{59, 130, 246, 255})
+			canvas.DrawText(formatAnimeSummary(item), textX, rowY+92, 22, color.RGBA{15, 23, 42, 255})
+			canvas.DrawText(formatAnimeDetails(item), textX, rowY+122, 20, color.RGBA{29, 78, 216, 255})
 			canvas.FillRect(cardX+42, rowY+148, cardW-84, 2, color.RGBA{219, 234, 254, 255})
 		}
 	}
@@ -535,32 +535,27 @@ func drawQuestionBackground(canvas *RGBA) {
 		t := float64(y) / float64(PreviewHeight-1)
 		r := uint8(248*(1-t) + 232*t)
 		g := uint8(251*(1-t) + 243*t)
-		b := uint8(255)
+		b := uint8(255*(1-t) + 255*t)
 		canvas.FillRect(0, y, PreviewWidth, 1, color.RGBA{r, g, b, 255})
 	}
-	canvas.FillCircle(154, 122, 106, color.RGBA{252, 207, 232, 56})
-	canvas.FillCircle(1058, 92, 112, color.RGBA{147, 197, 253, 66})
-	canvas.FillCircle(1084, 548, 172, color.RGBA{147, 197, 253, 46})
 }
 
 func newQuoteCanvas(height int) *RGBA {
 	canvas := NewRGBA(PreviewWidth, height, color.RGBA{234, 244, 255, 255})
 	canvas.FillRect(0, 0, PreviewWidth, height, color.RGBA{234, 244, 255, 255})
-	canvas.FillRect(0, 0, PreviewWidth, height, color.RGBA{255, 255, 255, 46})
-	canvas.FillCircle(142, 132, 148, color.RGBA{252, 207, 232, 54})
-	canvas.FillCircle(1078, 98, 132, color.RGBA{147, 197, 253, 62})
-	canvas.FillCircle(1014, height-86, 176, color.RGBA{147, 197, 253, 44})
+	canvas.FillRect(0, 0, PreviewWidth, height/2, color.RGBA{248, 251, 255, 255})
+	canvas.FillRect(0, height/2, PreviewWidth, height-height/2, color.RGBA{219, 234, 254, 255})
 	return canvas
 }
 
 func drawFlowerAccent(canvas *RGBA, x, y int) {
-	petal := color.RGBA{252, 207, 232, 105}
+	petal := color.RGBA{252, 207, 232, 255}
 	canvas.FillCircle(x+28, y+20, 18, petal)
 	canvas.FillCircle(x+58, y+20, 18, petal)
 	canvas.FillCircle(x+28, y+50, 18, petal)
 	canvas.FillCircle(x+58, y+50, 18, petal)
-	canvas.FillCircle(x+43, y+35, 13, color.RGBA{147, 197, 253, 150})
-	canvas.FillRect(x+82, y+34, 46, 3, color.RGBA{147, 197, 253, 110})
+	canvas.FillCircle(x+43, y+35, 13, color.RGBA{147, 197, 253, 255})
+	canvas.FillRect(x+82, y+34, 46, 3, color.RGBA{147, 197, 253, 255})
 }
 
 func newAnimeCanvas(height int, variant string) *RGBA {

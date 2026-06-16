@@ -42,10 +42,13 @@ func TestBlogSharePageAndEmbedImage(t *testing.T) {
 	for _, expected := range []string{
 		`property="og:type" content="article"`,
 		`property="og:image"`,
+		`property="og:image" content="https://mirabellier.com/blog/post_123/embed-image.png?v=`,
+		`property="og:image:secure_url" content="https://mirabellier.com/blog/post_123/embed-image.png?v=`,
 		`property="og:image:width" content="1200"`,
 		`property="og:image:height" content="630"`,
 		`property="og:image:type" content="image/png"`,
 		`name="twitter:card" content="summary_large_image"`,
+		`name="twitter:image:src" content="https://mirabellier.com/blog/post_123/embed-image.png?v=`,
 		`property="article:tag" content="dev"`,
 		`rel="canonical" href="https://mirabellier.com/blog/post_123"`,
 	} {
@@ -68,6 +71,37 @@ func TestBlogSharePageAndEmbedImage(t *testing.T) {
 	assertPNGResponse(t, resp)
 	if got := resp.Header().Get("Cache-Control"); !strings.Contains(got, "immutable") {
 		t.Fatalf("Cache-Control = %q", got)
+	}
+}
+
+func TestBlogSharePageWithHyphenatedID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openPostsTestDB(t)
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.Exec(`
+		INSERT INTO posts (id, title, content, author, shortDescription, thumbnail, tags, likes, comments, createdAt, updatedAt)
+		VALUES ('post-with-hyphen', 'Hyphen Post', '{}', 'Mira', 'A post id with hyphens.', '', '[]', '[]', '[]', ?, ?)
+	`, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	router := gin.New()
+	RegisterRoutes(router.Group("/"), &RouteConfig{
+		DB:          db,
+		WebsiteBase: "https://mirabellier.com",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/blog/post-with-hyphen", nil)
+	req.Header.Set("User-Agent", "Discordbot/2.0")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("crawler status = %d, body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `rel="canonical" href="https://mirabellier.com/blog/post-with-hyphen"`) {
+		t.Fatalf("share HTML used wrong canonical\n%s", resp.Body.String())
 	}
 }
 

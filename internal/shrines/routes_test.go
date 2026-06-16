@@ -35,8 +35,11 @@ func TestShrineSharePageAndEmbedImage(t *testing.T) {
 	body := resp.Body.String()
 	for _, expected := range []string{
 		`property="og:image"`,
+		`property="og:image" content="https://mirabellier.com/shrine/kanna/embed-image.png?v=`,
+		`property="og:image:secure_url" content="https://mirabellier.com/shrine/kanna/embed-image.png?v=`,
 		`property="og:image:type" content="image/png"`,
 		`name="twitter:card" content="summary_large_image"`,
+		`name="twitter:image:src" content="https://mirabellier.com/shrine/kanna/embed-image.png?v=`,
 		`rel="canonical" href="https://mirabellier.com/shrine/kanna"`,
 	} {
 		if !strings.Contains(body, expected) {

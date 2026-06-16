@@ -76,12 +76,15 @@ func (h *handler) blogEmbedImage(c *gin.Context) {
 
 func (h *handler) loadBlogPost(c *gin.Context) *Post {
 	id := c.Param("id")
-	if strings.Contains(id, "-") {
-		parts := strings.Split(id, "-")
-		id = parts[len(parts)-1]
-	}
 
 	post, err := GetPost(h.db, id)
+	if err != nil {
+		if strings.Contains(id, "-") {
+			parts := strings.Split(id, "-")
+			id = parts[len(parts)-1]
+			post, err = GetPost(h.db, id)
+		}
+	}
 	if err != nil {
 		c.String(http.StatusNotFound, "Post not found")
 		return nil
@@ -92,7 +95,7 @@ func (h *handler) loadBlogPost(c *gin.Context) *Post {
 func (h *handler) renderBlogShareHTML(c *gin.Context, post *Post) {
 	base := seo.WebsiteBase(h.websiteBase)
 	canonicalURL := base + "/blog/" + post.ID
-	version := seo.VersionHash("blog-render-v1", post.ID, post.Title, post.CreatedAt, stringValue(post.UpdatedAt), stringValue(post.ShortDescription), stringValue(post.Thumbnail))
+	version := seo.VersionHash("blog-render-v2", post.ID, post.Title, post.CreatedAt, stringValue(post.UpdatedAt), stringValue(post.ShortDescription), stringValue(post.Thumbnail))
 	imageURL := canonicalURL + "/embed-image.png?v=" + version
 	description := strings.TrimSpace(stringValue(post.ShortDescription))
 	if description == "" {
@@ -142,6 +145,7 @@ func (h *handler) renderBlogShareHTML(c *gin.Context, post *Post) {
 <meta property="og:site_name" content="Mirabellier">
 <meta property="og:url" content="%s">
 <meta property="og:image" content="%s">
+<meta property="og:image:secure_url" content="%s">
 <meta property="og:image:width" content="%d">
 <meta property="og:image:height" content="%d">
 <meta property="og:image:type" content="image/png">
@@ -153,6 +157,7 @@ func (h *handler) renderBlogShareHTML(c *gin.Context, post *Post) {
 <meta name="twitter:title" content="%s">
 <meta name="twitter:description" content="%s">
 <meta name="twitter:image" content="%s">
+<meta name="twitter:image:src" content="%s">
 <meta name="twitter:image:alt" content="%s">
 <link rel="canonical" href="%s">
 <script type="application/ld+json">%s</script>
@@ -161,10 +166,10 @@ func (h *handler) renderBlogShareHTML(c *gin.Context, post *Post) {
 </html>`,
 		html.EscapeString(post.Title), html.EscapeString(description),
 		html.EscapeString(post.Title), html.EscapeString(description), html.EscapeString(canonicalURL),
-		html.EscapeString(imageURL), embed.PreviewWidth, embed.PreviewHeight, html.EscapeString(post.Title),
+		html.EscapeString(imageURL), html.EscapeString(imageURL), embed.PreviewWidth, embed.PreviewHeight, html.EscapeString(post.Title),
 		html.EscapeString(post.CreatedAt), html.EscapeString(updatedAt), html.EscapeString(author), tagMeta,
 		html.EscapeString(post.Title), html.EscapeString(description), html.EscapeString(imageURL),
-		html.EscapeString(post.Title), html.EscapeString(canonicalURL), escapedJSON,
+		html.EscapeString(imageURL), html.EscapeString(post.Title), html.EscapeString(canonicalURL), escapedJSON,
 		html.EscapeString(post.Title), html.EscapeString(description), html.EscapeString(canonicalURL))
 
 	c.Header("Content-Type", "text/html; charset=utf-8")

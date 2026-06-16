@@ -234,7 +234,7 @@ func (h *handler) profileSEOPage(c *gin.Context) {
 	if user.Bio != nil && strings.TrimSpace(*user.Bio) != "" {
 		desc = *user.Bio
 	}
-	version := seo.VersionHash("profile-render-v1", user.Username, stringValue(user.Avatar), stringValue(user.Bio), user.CreatedAt)
+	version := seo.VersionHash("profile-render-v2", user.Username, stringValue(user.Avatar), stringValue(user.Bio), user.CreatedAt)
 	seo.RenderShareHTML(c, h.cfg.WebsiteBase, seo.SharePage{
 		Title:       user.Username + "'s Profile",
 		Description: desc,

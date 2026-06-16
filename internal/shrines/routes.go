@@ -193,7 +193,7 @@ func (h *handler) hubSEOPage(c *gin.Context) {
 		c.Redirect(http.StatusTemporaryRedirect, strings.TrimRight(h.cfg.FrontendURL, "/")+"/shrine")
 		return
 	}
-	version := seo.VersionHash("shrine-hub-render-v1")
+	version := seo.VersionHash("shrine-hub-render-v2")
 	seo.RenderShareHTML(c, h.cfg.WebsiteBase, seo.SharePage{
 		Title:       "Character Shrines",
 		Description: "Character shrine pages on Mirabellier.",
@@ -216,7 +216,7 @@ func (h *handler) shrineSEOPage(c *gin.Context) {
 		return
 	}
 	desc := firstText(page.Description, page.Excerpt, "A character shrine on Mirabellier.")
-	version := seo.VersionHash("shrine-render-v1", page.Slug, page.Title, desc, stringValue(page.Image), page.UpdatedAt)
+	version := seo.VersionHash("shrine-render-v2", page.Slug, page.Title, desc, stringValue(page.Image), page.UpdatedAt)
 	seo.RenderShareHTML(c, h.cfg.WebsiteBase, seo.SharePage{
 		Title:       page.Title,
 		Description: desc,

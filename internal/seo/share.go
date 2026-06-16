@@ -22,6 +22,8 @@ type SharePage struct {
 	ImageAlt    string
 }
 
+const embedCacheVersion = "embed-cache-2026-06-16-1"
+
 func WebsiteBase(base string) string {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	if base == "" {
@@ -64,6 +66,8 @@ func SetEmbedImageCacheHeaders(c *gin.Context) {
 
 func VersionHash(parts ...string) string {
 	h := sha1.New()
+	_, _ = h.Write([]byte(embedCacheVersion))
+	_, _ = h.Write([]byte{0})
 	for _, part := range parts {
 		_, _ = h.Write([]byte(part))
 		_, _ = h.Write([]byte{0})
@@ -110,6 +114,7 @@ func RenderShareHTML(c *gin.Context, websiteBase string, page SharePage) {
 <meta property="og:site_name" content="Mirabellier">
 <meta property="og:url" content="%s">
 <meta property="og:image" content="%s">
+<meta property="og:image:secure_url" content="%s">
 <meta property="og:image:width" content="%d">
 <meta property="og:image:height" content="%d">
 <meta property="og:image:type" content="image/png">
@@ -118,6 +123,7 @@ func RenderShareHTML(c *gin.Context, websiteBase string, page SharePage) {
 <meta name="twitter:title" content="%s">
 <meta name="twitter:description" content="%s">
 <meta name="twitter:image" content="%s">
+<meta name="twitter:image:src" content="%s">
 <meta name="twitter:image:alt" content="%s">
 <link rel="canonical" href="%s">
 <script type="application/ld+json">%s</script>
@@ -125,8 +131,8 @@ func RenderShareHTML(c *gin.Context, websiteBase string, page SharePage) {
 <body><main><h1>%s</h1><p><a href="%s">Open this page</a></p></main></body>
 </html>`,
 		title, desc, title, desc, html.EscapeString(canonicalURL), html.EscapeString(imageURL),
-		page.ImageWidth, page.ImageHeight, imgAlt, title, desc, html.EscapeString(imageURL),
-		imgAlt, html.EscapeString(canonicalURL), escapedJSON, title, html.EscapeString(canonicalURL))
+		html.EscapeString(imageURL), page.ImageWidth, page.ImageHeight, imgAlt, title, desc, html.EscapeString(imageURL),
+		html.EscapeString(imageURL), imgAlt, html.EscapeString(canonicalURL), escapedJSON, title, html.EscapeString(canonicalURL))
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	SetNoStoreHeaders(c)
