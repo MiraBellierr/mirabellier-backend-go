@@ -167,16 +167,20 @@ func RarityFromFavorites(favorites *int) string {
 	if favorites == nil || *favorites <= 0 {
 		return "C"
 	}
+	if *favorites >= CHARACTER_FAVORITES_UR_MIN {
+		return "UR"
+	}
+
 	clamped := *favorites
 	if clamped < CHARACTER_FAVORITES_MIN {
 		clamped = CHARACTER_FAVORITES_MIN
 	}
-	if clamped > CHARACTER_FAVORITES_MAX {
-		clamped = CHARACTER_FAVORITES_MAX
+	if clamped > CHARACTER_FAVORITES_UR_MIN {
+		clamped = CHARACTER_FAVORITES_UR_MIN
 	}
 
 	low := math.Log(float64(CHARACTER_FAVORITES_MIN))
-	high := math.Log(float64(CHARACTER_FAVORITES_MAX))
+	high := math.Log(float64(CHARACTER_FAVORITES_UR_MIN))
 	progress := 0.0
 	if high > low {
 		progress = (math.Log(float64(clamped)) - low) / (high - low)
@@ -189,13 +193,16 @@ func RarityFromFavorites(favorites *int) string {
 
 	cursor := 0
 	for _, r := range RarityOrder {
+		if r == "UR" {
+			break
+		}
 		cursor += RarityConfigMap[r].Weight
 		if progress < float64(cursor)/float64(weightSum) {
 			return r
 		}
 	}
 
-	return "UR"
+	return "SSR"
 }
 
 func pickFromDBPool(db *sql.DB) (*MALCharacterCard, error) {
