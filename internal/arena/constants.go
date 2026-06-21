@@ -16,11 +16,11 @@ type RarityConfig struct {
 }
 
 var RarityConfigMap = map[string]RarityConfig{
-	"C":   {ID: "C", Weight: 60, PowerBonus: 0, CoinReward: 2},
-	"R":   {ID: "R", Weight: 25, PowerBonus: 8, CoinReward: 5},
-	"SR":  {ID: "SR", Weight: 10, PowerBonus: 18, CoinReward: 12},
-	"SSR": {ID: "SSR", Weight: 4, PowerBonus: 34, CoinReward: 25},
-	"UR":  {ID: "UR", Weight: 1, PowerBonus: 58, CoinReward: 45},
+	"C":   {ID: "C", Weight: 60, PowerBonus: 0, CoinReward: 0},
+	"R":   {ID: "R", Weight: 25, PowerBonus: 3, CoinReward: 3},
+	"SR":  {ID: "SR", Weight: 10, PowerBonus: 7, CoinReward: 7},
+	"SSR": {ID: "SSR", Weight: 4, PowerBonus: 12, CoinReward: 12},
+	"UR":  {ID: "UR", Weight: 1, PowerBonus: 18, CoinReward: 18},
 }
 
 type Sprite struct {
@@ -105,9 +105,9 @@ var TierConfig = []TierEntry{
 			{ID: "copper_ring", Name: "Copper Ring", Slot: "charm", Stats: map[string]int{"luck": 4}, Sprite: Sprite{Sheet: "game.png", Row: 7, Col: 4, Size: 32}, Passive: &PassiveEffect{Key: "coin_blessing_small", Trigger: "onWin", Priority: 4, Actions: []PassiveAction{{Type: "rewardBonusPct", Target: "coins", Value: 5}}}},
 		},
 		Consumables: []ConsumableItem{
-			{ID: "red_tonic", Name: "Red Tonic", Sprite: Sprite{Sheet: "game.png", Row: 8, Col: 0, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "shield_fight_start", Amount: 20, Charges: 1}},
-			{ID: "green_draft", Name: "Green Draft", Sprite: Sprite{Sheet: "game.png", Row: 8, Col: 2, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "exp_boost", Pct: 20, Wins: 1}},
-			{ID: "amber_draft", Name: "Amber Draft", Sprite: Sprite{Sheet: "game.png", Row: 8, Col: 3, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "coin_boost", Pct: 20, Wins: 1}},
+			{ID: "red_tonic", Name: "Red Tonic", Sprite: Sprite{Sheet: "game.png", Row: 8, Col: 0, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "shield_fight_start", Amount: 20, Charges: 5}},
+			{ID: "green_draft", Name: "Green Draft", Sprite: Sprite{Sheet: "game.png", Row: 8, Col: 2, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "exp_boost", Pct: 20, Fights: 10}},
+			{ID: "amber_draft", Name: "Amber Draft", Sprite: Sprite{Sheet: "game.png", Row: 8, Col: 3, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "coin_boost", Pct: 20, Fights: 10}},
 		},
 		Materials: []MaterialItem{
 			{ID: "driftwood_shard", Name: "Driftwood Shard", Sprite: Sprite{Sheet: "game.png", Row: 16, Col: 0, Size: 32}},
@@ -124,7 +124,7 @@ var TierConfig = []TierEntry{
 			{ID: "azure_ring", Name: "Azure Ring", Slot: "charm", Stats: map[string]int{"luck": 8, "speed": 5}, Sprite: Sprite{Sheet: "game.png", Row: 7, Col: 5, Size: 32}, Passive: &PassiveEffect{Key: "evasion_primer", Trigger: "onFightStart", Priority: 8, Actions: []PassiveAction{{Type: "addEvasionPct", Value: 4}}}},
 		},
 		Consumables: []ConsumableItem{
-			{ID: "frost_elixir", Name: "Frost Elixir", Sprite: Sprite{Sheet: "game.png", Row: 8, Col: 5, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "evade_next_fight", Pct: 15, Fights: 1}},
+			{ID: "frost_elixir", Name: "Frost Elixir", Sprite: Sprite{Sheet: "game.png", Row: 8, Col: 5, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "evade_next_fight", Pct: 15, Fights: 5}},
 			{ID: "viridian_elixir", Name: "Viridian Elixir", Sprite: Sprite{Sheet: "game.png", Row: 8, Col: 6, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "upgrade_lowest_rarity", Charges: 1}},
 			{ID: "fuse_bomb", Name: "Fuse Bomb", Sprite: Sprite{Sheet: "game.png", Row: 9, Col: 11, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "first_hit_true_damage", Value: 25, Charges: 1}},
 		},
@@ -143,8 +143,8 @@ var TierConfig = []TierEntry{
 			{ID: "verdant_core", Name: "Verdant Core", Slot: "charm", Stats: map[string]int{"hp": 24, "luck": 10}, Sprite: Sprite{Sheet: "game.png", Row: 16, Col: 2, Size: 32}, Passive: &PassiveEffect{Key: "verdant_regen", Trigger: "onDamageTaken", Priority: 7, Actions: []PassiveAction{{Type: "healFlat", Value: 4, MaxTriggersPerFight: 3}}}},
 		},
 		Consumables: []ConsumableItem{
-			{ID: "sun_elixir", Name: "Sun Elixir", Sprite: Sprite{Sheet: "game.png", Row: 8, Col: 7, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "coin_boost", Pct: 40, Wins: 2}},
-			{ID: "star_tonic", Name: "Star Tonic", Sprite: Sprite{Sheet: "game.png", Row: 8, Col: 8, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "exp_boost", Pct: 40, Wins: 2}},
+			{ID: "sun_elixir", Name: "Sun Elixir", Sprite: Sprite{Sheet: "game.png", Row: 8, Col: 7, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "coin_boost", Pct: 40, Fights: 10}},
+			{ID: "star_tonic", Name: "Star Tonic", Sprite: Sprite{Sheet: "game.png", Row: 8, Col: 8, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "exp_boost", Pct: 40, Fights: 10}},
 			{ID: "lantern_oil", Name: "Lantern Oil", Sprite: Sprite{Sheet: "game.png", Row: 9, Col: 8, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "bonus_vs_higher_rarity", Pct: 10, Charges: 1}},
 		},
 		Materials: []MaterialItem{
@@ -164,7 +164,7 @@ var TierConfig = []TierEntry{
 		Consumables: []ConsumableItem{
 			{ID: "seeker_lens", Name: "Seeker Lens", Sprite: Sprite{Sheet: "game.png", Row: 9, Col: 7, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "reroll_keep_higher", Charges: 1}},
 			{ID: "oath_ribbon", Name: "Oath Ribbon", Sprite: Sprite{Sheet: "game.png", Row: 10, Col: 10, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "streak_shield", Charges: 2}},
-			{ID: "treasure_cache", Name: "Treasure Cache", Sprite: Sprite{Sheet: "game.png", Row: 10, Col: 11, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "coin_boost", Pct: 80, Wins: 3}},
+			{ID: "treasure_cache", Name: "Treasure Cache", Sprite: Sprite{Sheet: "game.png", Row: 10, Col: 11, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "coin_boost", Pct: 80, Fights: 10}},
 		},
 		Materials: []MaterialItem{
 			{ID: "ember_dust", Name: "Ember Dust", Sprite: Sprite{Sheet: "game.png", Row: 18, Col: 4, Size: 32}},
@@ -182,7 +182,7 @@ var TierConfig = []TierEntry{
 		},
 		Consumables: []ConsumableItem{
 			{ID: "prism_draught", Name: "Prism Draught", Sprite: Sprite{Sheet: "game.png", Row: 8, Col: 14, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "guarantee_ssr_plus", Charges: 1}},
-			{ID: "sacred_candles", Name: "Sacred Candles", Sprite: Sprite{Sheet: "game.png", Row: 9, Col: 10, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "shield_fight_start", Amount: 35, Charges: 1}},
+			{ID: "sacred_candles", Name: "Sacred Candles", Sprite: Sprite{Sheet: "game.png", Row: 9, Col: 10, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "shield_fight_start", Amount: 35, Charges: 5}},
 			{ID: "gate_key", Name: "Gate Key", Sprite: Sprite{Sheet: "game.png", Row: 10, Col: 9, Size: 32}, ConsumableEffect: ConsumableEffectDesc{Kind: "cooldown_bypass", Charges: 1}},
 		},
 		Materials: []MaterialItem{
@@ -220,7 +220,7 @@ var CHARACTER_FAVORITES_MIN = 53
 var CHARACTER_FAVORITES_UR_MIN = 30000
 var CATALOG_VERSION = "v2"
 var FIGHT_COOLDOWN_MS = 5000
-var DAILY_CARD_DRAW_LIMIT = 5
+var DAILY_CARD_DRAW_LIMIT = 10
 
 var GEAR_CRAFT_COIN_FEES = []int{80, 350, 1200, 5000, 18000, 60000}
 var CONSUMABLE_CRAFT_COIN_FEES = []int{60, 250, 800, 2500, 9000, 30000}
